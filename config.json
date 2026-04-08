@@ -1,0 +1,92 @@
+{
+  "binance": {
+    "symbol": "BTCUSDT",
+    "interval": "1m",
+    "warmup_candles": 200,
+    "api_key": "5fmtozRCAzG9YrxNqPwvIAcLI5R806RVHpoTEYjr8YvaPHT4wsz4a3HYkZ9jlWkK",
+    "api_secret": "wVkfkXTNIyQgS55sFu4W7OtzOZ6uMubaxTFvYEpNA8Yt1XERz4ToM7zFDN5NndU3"
+  },
+  "strategies": {
+    "strategy1": {
+      "enabled": true,
+      "name": "Long-Only Breakout",
+      "initial_capital": 10000,
+      "risk_pct": 0.005,
+      "ema_fast": 20,
+      "ema_slow": 50,
+      "atr_period": 14,
+      "atr_sl_mult": 2.0,
+      "atr_tp_mult": 2.0,
+      "rsi_period": 14,
+      "rsi_max": 75,
+      "breakout_period": 10,
+      "vol_mult": 1.1,
+      "max_hold_hours": 2
+    },
+    "strategy2": {
+      "enabled": true,
+      "name": "Long-Only Relaxed",
+      "initial_capital": 10000,
+      "risk_pct": 0.008,
+      "ema_fast": 25,
+      "ema_slow": 60,
+      "atr_period": 14,
+      "atr_sl_mult": 1.8,
+      "atr_tp_mult": 2.5,
+      "rsi_period": 14,
+      "rsi_max": 72,
+      "breakout_period": 15,
+      "vol_mult": 1.08,
+      "fee": 0.0004
+    },
+    "strategy3": {
+      "enabled": true,
+      "name": "Long/Short Futures",
+      "initial_capital": 10000,
+      "risk_pct": 0.006,
+      "reward_ratio": 2,
+      "ema_fast": 15,
+      "ema_slow": 35,
+      "atr_period": 10,
+      "atr_sl_mult": 2.5,
+      "atr_tp_mult": 2.0,
+      "rsi_period": 14,
+      "breakout_period": 12,
+      "fee": 0.0004,
+      "slippage": 0.0005,
+      "funding_rate": 0.0001
+    },
+    "strategy4": {
+      "enabled": true,
+      "name": "EMA Crossover RSI & Price Action",
+      "initial_capital": 10000,
+      "risk_pct": 0.015,
+      "ema_fast": 8,
+      "ema_slow": 21,
+      "ema_short": 8,
+      "ema_long": 21,
+      "rsi_period": 9,
+      "reward_ratio": 1.5,
+      "fee": 0.0004
+    },
+    "strategy5": {
+      "enabled": true,
+      "name": "EMA 8/21 VWAP Momentum",
+      "initial_capital": 10000,
+      "risk_pct": 0.012,
+      "ema_fast": 5,
+      "ema_slow": 13,
+      "rsi_period": 9,
+      "vwap_period": 15,
+      "momentum_period": 3,
+      "reward_ratio": 1.8,
+      "fee": 0.0004
+    }
+  },
+  "system": {
+    "db_path": "paper_trading.db",
+    "check_interval_seconds": 30,
+    "host": "127.0.0.1",
+    "port": 8000
+  }
+}

@@ -1,0 +1,1032 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Binance Terminal - Professional Trading Platform</title>
+    <style>
+        :root {
+            --bg-primary: #0a0e17;
+            --bg-secondary: #111827;
+            --bg-card: #1a2235;
+            --bg-header: #0f1419;
+            --border: #2a3548;
+            --border-light: #374151;
+            --text: #e2e8f0;
+            --text-muted: #64748b;
+            --text-dim: #94a3b8;
+            --blue: #3b82f6;
+            --blue-dark: #1e40af;
+            --green: #22c55e;
+            --green-dark: #15803d;
+            --red: #ef4444;
+            --red-dark: #dc2626;
+            --yellow: #f59e0b;
+            --orange: #f97316;
+            --purple: #a855f7;
+            --cyan: #06b6d4;
+            --gray: #6b7280;
+            --success: #10b981;
+            --warning: #f59e0b;
+            --error: #ef4444;
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+        }
+
+        body {
+            background: var(--bg-primary);
+            color: var(--text);
+            font-size: 12px;
+            line-height: 1.4;
+            overflow: hidden;
+        }
+
+        /* === HEADER === */
+        .header {
+            background: var(--bg-header);
+            border-bottom: 1px solid var(--border);
+            padding: 8px 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            height: 50px;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .logo {
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--cyan);
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .logo::before {
+            content: '📊';
+            font-size: 20px;
+        }
+
+        .market-status {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 11px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--green);
+            animation: pulse 2s infinite;
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .time-display {
+            font-size: 11px;
+            color: var(--text-muted);
+            font-family: 'Courier New', monospace;
+        }
+
+        /* === MAIN LAYOUT === */
+        .main-container {
+            display: grid;
+            grid-template-columns: 280px 1fr 320px;
+            grid-template-rows: 1fr 200px;
+            height: calc(100vh - 50px);
+            gap: 1px;
+            background: var(--border);
+        }
+
+        .panel {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border);
+            background: rgba(0,0,0,0.2);
+            min-height: 36px;
+        }
+
+        .panel-title {
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--cyan);
+        }
+
+        .panel-controls {
+            display: flex;
+            gap: 4px;
+        }
+
+        .panel-body {
+            flex: 1;
+            overflow: auto;
+            padding: 8px;
+        }
+
+        /* === LEFT PANEL - WATCHLIST === */
+        .watchlist-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 6px 8px;
+            border-bottom: 1px solid var(--border-light);
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+
+        .watchlist-item:hover {
+            background: rgba(59,130,246,0.1);
+        }
+
+        .watchlist-item.active {
+            background: rgba(59,130,246,0.2);
+            border-left: 3px solid var(--blue);
+        }
+
+        .symbol-info {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .symbol-name {
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .symbol-price {
+            font-size: 10px;
+            color: var(--text-muted);
+        }
+
+        .price-info {
+            text-align: right;
+        }
+
+        .current-price {
+            font-size: 12px;
+            font-weight: 600;
+            font-family: 'Courier New', monospace;
+        }
+
+        .price-change {
+            font-size: 10px;
+            font-weight: 500;
+        }
+
+        .price-change.positive {
+            color: var(--green);
+        }
+
+        .price-change.negative {
+            color: var(--red);
+        }
+
+        /* === CENTER PANEL - CHART === */
+        .chart-container {
+            position: relative;
+            height: 100%;
+            background: var(--bg-secondary);
+        }
+
+        .chart-toolbar {
+            display: flex;
+            gap: 8px;
+            padding: 8px;
+            border-bottom: 1px solid var(--border);
+            background: var(--bg-card);
+        }
+
+        .market-stats {
+            display: flex;
+            gap: 16px;
+            padding: 6px 12px;
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border);
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-width: 70px;
+        }
+
+        .stat-label {
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-dim);
+        }
+
+        .stat-value {
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text);
+        }
+
+        .stat-value.positive {
+            color: var(--green);
+        }
+
+        .stat-value.negative {
+            color: var(--red);
+        }
+
+        .timeframe-btn {
+            padding: 4px 8px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 10px;
+            transition: all 0.15s;
+        }
+
+        .timeframe-btn:hover {
+            border-color: var(--blue);
+            color: var(--blue);
+        }
+
+        .timeframe-btn.active {
+            background: var(--blue);
+            border-color: var(--blue);
+            color: white;
+        }
+
+        /* === RIGHT PANEL - ORDER BOOK & TRADES === */
+        .orderbook-container {
+            display: grid;
+            grid-template-rows: 1fr 1fr;
+            gap: 1px;
+            height: 100%;
+        }
+
+        .orderbook-section {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .orderbook-header {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 8px;
+            padding: 6px 8px;
+            border-bottom: 1px solid var(--border);
+            font-size: 10px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+
+        .order-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 8px;
+            padding: 4px 8px;
+            font-size: 11px;
+            font-family: 'Courier New', monospace;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .bid-row {
+            color: var(--green);
+        }
+
+        .ask-row {
+            color: var(--red);
+        }
+
+        .order-price {
+            text-align: left;
+        }
+
+        .order-size {
+            text-align: center;
+        }
+
+        .order-total {
+            text-align: right;
+        }
+
+        /* === BOTTOM PANEL - TRADES === */
+        .trades-container {
+            grid-column: 2;
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+        }
+
+        .trade-row {
+            display: grid;
+            grid-template-columns: 80px 1fr 100px 80px;
+            gap: 12px;
+            padding: 6px 12px;
+            border-bottom: 1px solid var(--border-light);
+            font-size: 11px;
+            font-family: 'Courier New', monospace;
+        }
+
+        .trade-time {
+            color: var(--text-muted);
+        }
+
+        .trade-price {
+            text-align: right;
+            font-weight: 600;
+        }
+
+        .trade-size {
+            text-align: right;
+        }
+
+        .trade-type {
+            text-align: center;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 9px;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .trade-type.buy {
+            background: rgba(34,197,94,0.2);
+            color: var(--green);
+        }
+
+        .trade-type.sell {
+            background: rgba(239,68,68,0.2);
+            color: var(--red);
+        }
+
+        /* === ANIMATIONS === */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Performance optimizations */
+        .watchlist-item, .order-row, .trade-row {
+            will-change: auto;
+            contain: layout style paint;
+        }
+
+        .chart-container canvas {
+            will-change: transform;
+        }
+
+        /* === SCROLLBAR === */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 3px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--blue);
+        }
+
+        /* === RESPONSIVE === */
+        @media (max-width: 1400px) {
+            .main-container {
+                grid-template-columns: 250px 1fr 280px;
+            }
+        }
+
+        @media (max-width: 1200px) {
+            .main-container {
+                grid-template-columns: 1fr;
+                grid-template-rows: 50px 1fr 200px;
+            }
+            .watchlist-panel, .orderbook-panel {
+                display: none;
+            }
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <!-- HEADER -->
+    <div class="header">
+        <div class="header-left">
+            <div class="logo">Binance Terminal</div>
+            <div class="market-status">
+                <div class="status-dot"></div>
+                <span>Live Market Data</span>
+            </div>
+        </div>
+        <div class="header-right">
+            <a href="/monitor" style="color: var(--text-muted); text-decoration: none; font-size: 11px; margin-right: 16px;">Monitor</a>
+            <a href="/" style="color: var(--text-muted); text-decoration: none; font-size: 11px; margin-right: 16px;">Dashboard</a>
+            <div class="time-display" id="current-time">00:00:00 UTC</div>
+        </div>
+    </div>
+
+    <!-- MAIN CONTAINER -->
+    <div class="main-container">
+        <!-- LEFT PANEL - WATCHLIST -->
+        <div class="panel watchlist-panel">
+            <div class="panel-header">
+                <div class="panel-title">Market Watch</div>
+                <div class="panel-controls">
+                    <button class="timeframe-btn active" onclick="setSymbol('BTCUSDT')">BTC</button>
+                    <button class="timeframe-btn" onclick="setSymbol('ETHUSDT')">ETH</button>
+                </div>
+            </div>
+            <div class="panel-body">
+                <div id="watchlist" class="watchlist">
+                    <div class="watchlist-item active" data-symbol="BTCUSDT">
+                        <div class="symbol-info">
+                            <div class="symbol-name">BTC/USDT</div>
+                            <div class="symbol-price">Loading...</div>
+                        </div>
+                        <div class="price-info">
+                            <div class="current-price">--</div>
+                            <div class="price-change">--</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- CENTER PANEL - CHART -->
+        <div class="panel chart-panel">
+            <div class="panel-header">
+                <div class="panel-title" id="chart-title">BTC/USDT - 1H Chart</div>
+                <div class="panel-controls">
+                    <button class="timeframe-btn active" data-interval="1m">1M</button>
+                    <button class="timeframe-btn" data-interval="5m">5M</button>
+                    <button class="timeframe-btn" data-interval="15m">15M</button>
+                    <button class="timeframe-btn" data-interval="1h">1H</button>
+                </div>
+            </div>
+            <div class="panel-body">
+                <div class="market-stats" id="market-stats">
+                    <div class="stat-item">
+                        <div class="stat-label">24H HIGH</div>
+                        <div class="stat-value" id="24h-high">--</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">24H LOW</div>
+                        <div class="stat-value" id="24h-low">--</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">24H CHANGE</div>
+                        <div class="stat-value" id="24h-change">--</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-label">24H VOLUME</div>
+                        <div class="stat-value" id="24h-volume">--</div>
+                    </div>
+                </div>
+                <div class="chart-toolbar">
+                    <button class="timeframe-btn" onclick="toggleIndicators()">Indicators</button>
+                    <button class="timeframe-btn" onclick="toggleVolume()">Volume</button>
+                    <button class="timeframe-btn" onclick="resetZoom()">Reset</button>
+                </div>
+                <div class="chart-container">
+                    <canvas id="price-chart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT PANEL - ORDER BOOK -->
+        <div class="panel orderbook-panel">
+            <div class="panel-header">
+                <div class="panel-title">Order Book & Trades</div>
+            </div>
+            <div class="panel-body">
+                <div class="orderbook-container">
+                    <!-- ORDER BOOK -->
+                    <div class="orderbook-section">
+                        <div class="orderbook-header">
+                            <div>Price</div>
+                            <div>Size</div>
+                            <div>Total</div>
+                        </div>
+                        <div id="orderbook-content">
+                            <div class="order-row ask-row">
+                                <div class="order-price">--</div>
+                                <div class="order-size">--</div>
+                                <div class="order-total">--</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- RECENT TRADES -->
+                    <div class="orderbook-section">
+                        <div class="orderbook-header">
+                            <div>Time</div>
+                            <div>Price</div>
+                            <div>Size</div>
+                            <div>Type</div>
+                        </div>
+                        <div id="trades-content">
+                            <div class="trade-row">
+                                <div class="trade-time">--:--:--</div>
+                                <div class="trade-price">--</div>
+                                <div class="trade-size">--</div>
+                                <div class="trade-type">--</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- BOTTOM PANEL - RECENT TRADES -->
+        <div class="trades-container">
+            <div class="panel-header">
+                <div class="panel-title">Market Trades Stream</div>
+                <div class="panel-controls">
+                    <span id="trades-count">0 trades</span>
+                </div>
+            </div>
+            <div class="panel-body">
+                <div id="market-trades-stream">
+                    <div class="trade-row">
+                        <div class="trade-time">Waiting for trades...</div>
+                        <div class="trade-price"></div>
+                        <div class="trade-size"></div>
+                        <div class="trade-type"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let currentSymbol = 'BTCUSDT';
+        let currentInterval = '1m';
+        let priceChart = null;
+        let watchlistData = [];
+        let orderBookData = { bids: [], asks: [] };
+        let tradesData = [];
+        let tickerData = {};
+        // Cache for performance optimization
+        let lastWatchlistHash = '';
+        let lastOrderBookHash = '';
+        let lastTradesHash = '';
+        let lastTickerHash = '';
+        let lastChartDataHash = '';
+
+        // === INITIALIZATION ===
+        document.addEventListener('DOMContentLoaded', () => {
+            initChart();
+            updateTime();
+            loadWatchlist();
+            loadOrderBook();
+            loadTrades();
+            load24hrTicker();
+
+            // Update time every second (lightweight)
+            setInterval(updateTime, 1000);
+
+            // Update market data every 5 seconds (balanced performance)
+            setInterval(() => {
+                loadWatchlist();
+                loadOrderBook();
+                loadTrades();
+                load24hrTicker();
+            }, 5000);
+
+            // Update chart every 10 seconds (less frequent for performance)
+            setInterval(updateChart, 10000);
+        });
+
+        // === TIME DISPLAY ===
+        function updateTime() {
+            const now = new Date();
+            document.getElementById('current-time').textContent =
+                now.toISOString().split('T')[1].split('.')[0] + ' UTC';
+        }
+
+        // === WATCHLIST ===
+        let watchlistLoading = false;
+        async function loadWatchlist() {
+            if (watchlistLoading) return; // Prevent concurrent requests
+            watchlistLoading = true;
+
+            try {
+                const response = await fetch('/api/market/watchlist');
+                const data = await response.json();
+
+                if (data.watchlist) {
+                    watchlistData = data.watchlist;
+                    requestAnimationFrame(() => updateWatchlistDisplay());
+                }
+            } catch (error) {
+                console.error('Failed to load watchlist:', error);
+            } finally {
+                watchlistLoading = false;
+            }
+        }
+
+        function updateWatchlistDisplay() {
+            const dataStr = JSON.stringify(watchlistData);
+            const currentHash = simpleHash(dataStr);
+
+            if (currentHash === lastWatchlistHash) {
+                return; // Data hasn't changed, skip update
+            }
+            lastWatchlistHash = currentHash;
+
+            const container = document.getElementById('watchlist');
+
+            container.innerHTML = watchlistData.map(item => {
+                const changeClass = item.change >= 0 ? 'positive' : 'negative';
+                const changeSign = item.change >= 0 ? '+' : '';
+
+                return `
+                    <div class="watchlist-item ${item.symbol === currentSymbol ? 'active' : ''}"
+                         data-symbol="${item.symbol}" onclick="setSymbol('${item.symbol}')">
+                        <div class="symbol-info">
+                            <div class="symbol-name">${item.symbol.replace('USDT', '/USDT')}</div>
+                            <div class="symbol-price">H: $${item.high.toFixed(2)} | L: $${item.low.toFixed(2)}</div>
+                        </div>
+                        <div class="price-info">
+                            <div class="current-price">$${item.price.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</div>
+                            <div class="price-change ${changeClass}">${changeSign}${item.change.toFixed(2)}%</div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function setSymbol(symbol) {
+            currentSymbol = symbol;
+            document.getElementById('chart-title').textContent = `${symbol.replace('USDT', '/USDT')} - ${currentInterval.toUpperCase()} Chart`;
+            updateWatchlistDisplay();
+            loadOrderBook();
+            loadTrades();
+            load24hrTicker();
+            updateChart();
+        }
+
+        // === ORDER BOOK ===
+        let orderBookLoading = false;
+        async function loadOrderBook() {
+            if (orderBookLoading) return; // Prevent concurrent requests
+            orderBookLoading = true;
+
+            try {
+                const response = await fetch(`/api/market/orderbook/${currentSymbol}?limit=15`);
+                const data = await response.json();
+
+                if (data.bids && data.asks) {
+                    orderBookData = data;
+                    requestAnimationFrame(() => updateOrderBookDisplay());
+                }
+            } catch (error) {
+                console.error('Failed to load order book:', error);
+            } finally {
+                orderBookLoading = false;
+            }
+        }
+
+        function updateOrderBookDisplay() {
+            const dataStr = JSON.stringify(orderBookData);
+            const currentHash = simpleHash(dataStr);
+
+            if (currentHash === lastOrderBookHash) {
+                return; // Data hasn't changed, skip update
+            }
+            lastOrderBookHash = currentHash;
+
+            const container = document.getElementById('orderbook-content');
+
+            // Combine bids and asks, sort by price
+            const allOrders = [
+                ...orderBookData.bids.slice(0, 8).map(([price, size]) => ({ price: parseFloat(price), size: parseFloat(size), type: 'bid' })),
+                ...orderBookData.asks.slice(0, 8).map(([price, size]) => ({ price: parseFloat(price), size: parseFloat(size), type: 'ask' }))
+            ].sort((a, b) => b.price - a.price); // Sort descending
+
+            container.innerHTML = allOrders.map(order => `
+                <div class="order-row ${order.type}-row">
+                    <div class="order-price">${order.price.toFixed(order.price > 100 ? 2 : 6)}</div>
+                    <div class="order-size">${order.size.toFixed(4)}</div>
+                    <div class="order-total">${(order.price * order.size).toFixed(2)}</div>
+                </div>
+            `).join('');
+        }
+
+        // === TRADES ===
+        let tradesLoading = false;
+        async function loadTrades() {
+            if (tradesLoading) return; // Prevent concurrent requests
+            tradesLoading = true;
+
+            try {
+                const response = await fetch(`/api/market/trades/${currentSymbol}?limit=20`);
+                const data = await response.json();
+
+                if (Array.isArray(data)) {
+                    tradesData = data;
+                    requestAnimationFrame(() => updateTradesDisplay());
+                }
+            } catch (error) {
+                console.error('Failed to load trades:', error);
+            } finally {
+                tradesLoading = false;
+            }
+        }
+
+        // === 24HR TICKER ===
+        let tickerLoading = false;
+        async function load24hrTicker() {
+            if (tickerLoading) return; // Prevent concurrent requests
+            tickerLoading = true;
+
+            try {
+                const response = await fetch(`/api/market/ticker/${currentSymbol}`);
+                const data = await response.json();
+
+                if (data && !data.error) {
+                    tickerData = data;
+                    requestAnimationFrame(() => updateTickerDisplay());
+                }
+            } catch (error) {
+                console.error('Failed to load 24hr ticker:', error);
+            } finally {
+                tickerLoading = false;
+            }
+        }
+
+        function updateTickerDisplay() {
+            const dataStr = JSON.stringify(tickerData);
+            const currentHash = simpleHash(dataStr);
+
+            if (currentHash === lastTickerHash) {
+                return; // Data hasn't changed, skip update
+            }
+            lastTickerHash = currentHash;
+
+            const highEl = document.getElementById('24h-high');
+            const lowEl = document.getElementById('24h-low');
+            const changeEl = document.getElementById('24h-change');
+            const volumeEl = document.getElementById('24h-volume');
+
+            if (tickerData.highPrice) {
+                highEl.textContent = `$${parseFloat(tickerData.highPrice).toFixed(2)}`;
+            }
+
+            if (tickerData.lowPrice) {
+                lowEl.textContent = `$${parseFloat(tickerData.lowPrice).toFixed(2)}`;
+            }
+
+            if (tickerData.priceChangePercent) {
+                const changePercent = parseFloat(tickerData.priceChangePercent);
+                const changeClass = changePercent >= 0 ? 'positive' : 'negative';
+                const changeSign = changePercent >= 0 ? '+' : '';
+
+                changeEl.textContent = `${changeSign}${changePercent.toFixed(2)}%`;
+                changeEl.className = `stat-value ${changeClass}`;
+            }
+
+            if (tickerData.volume) {
+                const volume = parseFloat(tickerData.volume);
+                volumeEl.textContent = `${(volume / 1000).toFixed(0)}K`;
+            }
+        }
+
+        function updateTradesDisplay() {
+            const dataStr = JSON.stringify(tradesData);
+            const currentHash = simpleHash(dataStr);
+
+            if (currentHash === lastTradesHash) {
+                return; // Data hasn't changed, skip update
+            }
+            lastTradesHash = currentHash;
+
+            const container = document.getElementById('trades-content');
+            const streamContainer = document.getElementById('market-trades-stream');
+
+            if (tradesData.length === 0) return;
+
+            // Update order book trades
+            const recentTrades = tradesData.slice(0, 10);
+            container.innerHTML = recentTrades.map(trade => {
+                const time = new Date(trade.time).toLocaleTimeString('en-US', {
+                    hour12: false,
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+
+                return `
+                    <div class="trade-row">
+                        <div class="trade-time">${time}</div>
+                        <div class="trade-price">${parseFloat(trade.price).toFixed(2)}</div>
+                        <div class="trade-size">${parseFloat(trade.qty).toFixed(4)}</div>
+                        <div class="trade-type ${trade.isBuyerMaker ? 'sell' : 'buy'}">${trade.isBuyerMaker ? 'SELL' : 'BUY'}</div>
+                    </div>
+                `;
+            }).join('');
+
+            // Update market trades stream
+            streamContainer.innerHTML = tradesData.slice(0, 15).map(trade => {
+                const time = new Date(trade.time).toLocaleTimeString('en-US', {
+                    hour12: false,
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit'
+                });
+
+                return `
+                    <div class="trade-row">
+                        <div class="trade-time">${time}</div>
+                        <div class="trade-price">${parseFloat(trade.price).toFixed(2)}</div>
+                        <div class="trade-size">${parseFloat(trade.qty).toFixed(4)}</div>
+                        <div class="trade-type ${trade.isBuyerMaker ? 'sell' : 'buy'}">${trade.isBuyerMaker ? 'SELL' : 'BUY'}</div>
+                    </div>
+                `;
+            }).join('');
+
+            document.getElementById('trades-count').textContent = `${tradesData.length} trades`;
+        }
+
+        // === CHART ===
+        function initChart() {
+            const ctx = document.getElementById('price-chart').getContext('2d');
+
+            priceChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: [{
+                        label: 'Price',
+                        data: [],
+                        borderColor: '#3b82f6',
+                        backgroundColor: 'rgba(59,130,246,0.1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.1,
+                        pointRadius: 0,
+                        parsing: {
+                            xAxisKey: 'time',
+                            yAxisKey: 'close'
+                        }
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        intersect: false,
+                        mode: 'index'
+                    },
+                    plugins: {
+                        legend: {
+                            display: false
+                        },
+                        tooltip: {
+                            callbacks: {
+                                title: (items) => {
+                                    return new Date(items[0].parsed.x).toLocaleString();
+                                },
+                                label: (item) => {
+                                    return `Price: $${item.parsed.y.toFixed(2)}`;
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: 'hour',
+                                displayFormats: {
+                                    hour: 'HH:mm'
+                                }
+                            },
+                            ticks: {
+                                color: '#64748b',
+                                font: { size: 10 }
+                            },
+                            grid: {
+                                color: 'rgba(42,53,72,0.3)'
+                            }
+                        },
+                        y: {
+                            ticks: {
+                                color: '#64748b',
+                                font: { size: 10 },
+                                callback: (value) => `$${value.toFixed(2)}`
+                            },
+                            grid: {
+                                color: 'rgba(42,53,72,0.3)'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        let chartLoading = false;
+        async function updateChart() {
+            if (chartLoading) return; // Prevent concurrent requests
+            chartLoading = true;
+
+            try {
+                const response = await fetch(`/api/klines?limit=100`);
+                const data = await response.json();
+
+                if (Array.isArray(data) && data.length > 0) {
+                    const chartData = data.map(item => ({
+                        time: new Date(item.open_time).getTime(),
+                        close: parseFloat(item.close),
+                        open: parseFloat(item.open),
+                        high: parseFloat(item.high),
+                        low: parseFloat(item.low),
+                        volume: parseFloat(item.volume)
+                    }));
+
+                    // Check if chart data actually changed
+                    const dataStr = JSON.stringify(chartData);
+                    const currentHash = simpleHash(dataStr);
+
+                    if (currentHash === lastChartDataHash) {
+                        return; // Data hasn't changed, skip chart update
+                    }
+                    lastChartDataHash = currentHash;
+
+                    priceChart.data.datasets[0].data = chartData;
+                    requestAnimationFrame(() => priceChart.update('none'));
+                }
+            } catch (error) {
+                console.error('Failed to update chart:', error);
+            } finally {
+                chartLoading = false;
+            }
+        }
+
+        // === UTILITY FUNCTIONS ===
+        function simpleHash(str) {
+            let hash = 0;
+            if (str.length == 0) return hash;
+            for (let i = 0; i < str.length; i++) {
+                let char = str.charCodeAt(i);
+                hash = ((hash << 5) - hash) + char;
+                hash = hash & hash; // Convert to 32bit integer
+            }
+            return hash;
+        }
+
+        function toggleIndicators() {
+            // Placeholder for indicator toggle
+            console.log('Toggle indicators');
+        }
+
+        function toggleVolume() {
+            // Placeholder for volume toggle
+            console.log('Toggle volume');
+        }
+
+        function resetZoom() {
+            if (priceChart) {
+                priceChart.resetZoom();
+            }
+        }
+    </script>
+</body>
+</html>

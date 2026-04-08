@@ -1,0 +1,943 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Paper Trading Terminal</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --bg: #080c14; --bg2: #0d1220; --bg3: #131929; --bg4: #1a2235;
+            --border: #1e2d45; --text: #e2e8f0; --muted: #4a6080;
+            --green: #00e676; --red: #ff1744; --yellow: #ffc400;
+            --blue: #2979ff; --purple: #aa00ff; --cyan: #00e5ff;
+            --orange: #ff6d00;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--bg); color: var(--text); font-size: 12px; overflow-x: hidden; }
+
+        /* ─── Header ─── */
+        .header {
+            background: var(--bg2);
+            border-bottom: 1px solid var(--border);
+            padding: 0 20px;
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            height: 56px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        .header-logo { font-size: 16px; font-weight: 700; color: var(--blue); letter-spacing: -0.5px; }
+        .header-logo span { color: var(--muted); font-weight: 400; }
+        .header-sep { width: 1px; height: 30px; background: var(--border); }
+
+        .live-badge {
+            display: flex; align-items: center; gap: 6px;
+            padding: 4px 12px; border-radius: 20px;
+            background: rgba(0,230,118,0.1); border: 1px solid var(--green);
+            color: var(--green); font-size: 11px; font-weight: 700;
+            letter-spacing: 1px;
+        }
+        .live-badge.warming {
+            background: rgba(255,196,0,0.1); border-color: var(--yellow);
+            color: var(--yellow);
+        }
+        .live-badge .dot {
+            width: 7px; height: 7px; border-radius: 50%;
+            background: currentColor;
+        }
+        .live-badge .dot.pulse { animation: lpulse 1.2s infinite; }
+        @keyframes lpulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+        .price-block { display: flex; align-items: baseline; gap: 10px; }
+        .price-main {
+            font-size: 26px; font-weight: 700; font-family: 'Consolas', monospace;
+            letter-spacing: -1px; transition: color 0.15s;
+        }
+        .price-main.up { color: var(--green); }
+        .price-main.down { color: var(--red); }
+        .price-main.neutral { color: var(--text); }
+
+        .price-change { font-size: 13px; font-weight: 600; font-family: 'Consolas', monospace; }
+        .price-change.up { color: var(--green); }
+        .price-change.down { color: var(--red); }
+
+        .price-24h { font-size: 10px; color: var(--muted); }
+        .price-24h span { color: var(--text); font-family: 'Consolas', monospace; }
+
+        .header-right { margin-left: auto; display: flex; align-items: center; gap: 16px; }
+        .conn-status { font-size: 10px; color: var(--muted); }
+        .conn-status.connected { color: var(--green); }
+        .conn-status .dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: currentColor; margin-right: 4px; vertical-align: middle; }
+        .nav-link { color: var(--muted); text-decoration: none; font-size: 11px; transition: color 0.2s; }
+        .nav-link:hover { color: var(--text); }
+
+        /* ─── Warmup overlay ─── */
+        .warmup-overlay {
+            position: fixed; inset: 0; background: rgba(8,12,20,0.97);
+            display: flex; flex-direction: column; align-items: center;
+            justify-content: center; z-index: 999;
+        }
+        .warmup-title { font-size: 24px; font-weight: 700; color: var(--yellow); margin-bottom: 8px; }
+        .warmup-sub { color: var(--muted); font-size: 13px; margin-bottom: 32px; }
+        .warmup-bar-wrap { width: 400px; background: var(--bg4); border-radius: 8px; height: 8px; overflow: hidden; margin-bottom: 16px; }
+        .warmup-bar { height: 100%; background: linear-gradient(90deg, var(--yellow), var(--orange)); border-radius: 8px; transition: width 0.5s; }
+        .warmup-count { font-size: 14px; color: var(--text); font-family: 'Consolas', monospace; }
+        .warmup-hint { margin-top: 12px; font-size: 11px; color: var(--muted); text-align: center; max-width: 360px; line-height: 1.6; }
+
+        /* ─── Main layout ─── */
+        .main { padding: 12px 16px; max-width: 1800px; margin: 0 auto; }
+
+        /* ─── Strategy cards row ─── */
+        .strat-row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 12px; }
+        .strat-card {
+            background: var(--bg3); border: 1px solid var(--border);
+            border-radius: 8px; padding: 12px; position: relative; overflow: hidden;
+            cursor: default;
+        }
+        .strat-card::before {
+            content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px;
+        }
+        .strat-card.s1::before { background: var(--blue); }
+        .strat-card.s2::before { background: var(--green); }
+        .strat-card.s3::before { background: var(--purple); }
+        .strat-card.s4::before { background: var(--orange); }
+        .strat-card.s5::before { background: var(--cyan); }
+
+        .strat-header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+        .strat-name { font-size: 9px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; }
+        .strat-live-pnl {
+            font-size: 18px; font-weight: 700; font-family: 'Consolas', monospace;
+            transition: color 0.3s;
+        }
+        .strat-capital { font-size: 11px; color: var(--muted); font-family: 'Consolas', monospace; margin-top: 2px; }
+        .strat-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin-top: 8px; }
+        .strat-metric { display: flex; justify-content: space-between; font-size: 10px; padding: 2px 0; }
+        .strat-metric .lbl { color: var(--muted); }
+        .strat-metric .val { font-family: 'Consolas', monospace; font-weight: 600; }
+        .strat-toggle {
+            position: absolute; top: 10px; right: 10px;
+            width: 32px; height: 16px; cursor: pointer;
+        }
+        .strat-toggle input { display: none; }
+        .strat-toggle .slider {
+            position: absolute; inset: 0; background: #1e293b;
+            border-radius: 16px; transition: 0.3s;
+        }
+        .strat-toggle .slider::before {
+            content: ''; position: absolute;
+            width: 12px; height: 12px; left: 2px; bottom: 2px;
+            background: var(--muted); border-radius: 50%; transition: 0.3s;
+        }
+        .strat-toggle input:checked + .slider { background: rgba(0,230,118,0.3); }
+        .strat-toggle input:checked + .slider::before { background: var(--green); transform: translateX(16px); }
+
+        /* ─── Two-column layout ─── */
+        .two-col { display: grid; grid-template-columns: 1fr 340px; gap: 12px; }
+        .panel { background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+        .panel-head {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 10px 14px; border-bottom: 1px solid var(--border);
+            background: var(--bg2);
+        }
+        .panel-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); }
+        .panel-body { padding: 10px; max-height: 280px; overflow-y: auto; }
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+        /* ─── Positions table ─── */
+        .pos-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        .pos-table th {
+            text-align: left; padding: 6px 8px; font-size: 9px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted);
+            border-bottom: 1px solid var(--border); white-space: nowrap;
+        }
+        .pos-table td {
+            padding: 8px 8px; border-bottom: 1px solid rgba(30,45,69,0.5);
+            white-space: nowrap; font-family: 'Consolas', monospace;
+        }
+        .pos-table tr:last-child td { border-bottom: none; }
+        .pos-table tr:hover td { background: rgba(41,121,255,0.05); }
+        .pos-table .up { color: var(--green); }
+        .pos-table .down { color: var(--red); }
+
+        .dir-chip {
+            display: inline-block; padding: 2px 7px; border-radius: 8px;
+            font-size: 9px; font-weight: 800; letter-spacing: 0.5px;
+        }
+        .dir-long { background: rgba(41,121,255,0.2); color: var(--blue); }
+        .dir-short { background: rgba(255,23,68,0.2); color: var(--red); }
+
+        .flash-green { animation: flashGreen 0.4s; }
+        .flash-red { animation: flashRed 0.4s; }
+        @keyframes flashGreen { 0%,100% { background: transparent; } 50% { background: rgba(0,230,118,0.15); } }
+        @keyframes flashRed { 0%,100% { background: transparent; } 50% { background: rgba(255,23,68,0.15); } }
+
+        .pos-status { display: flex; align-items: center; gap: 4px; font-size: 9px; color: var(--green); font-weight: 700; }
+        .pos-status .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--green); animation: lpulse 1s infinite; }
+
+        .empty { text-align: center; padding: 30px; color: var(--muted); font-size: 11px; }
+
+        /* ─── Live chart ─── */
+        .chart-wrap { height: 260px; position: relative; }
+        .chart-wrap canvas { width: 100% !important; height: 100% !important; }
+
+        /* ─── Equity chart panel ─── */
+        .equity-row { margin-bottom: 12px; }
+        .equity-chart { height: 200px; }
+
+        /* ─── Event feed ─── */
+        .event-feed { max-height: 180px; }
+        .event-item {
+            display: flex; align-items: flex-start; gap: 10px;
+            padding: 7px 0; border-bottom: 1px solid rgba(30,45,69,0.3);
+            font-size: 11px;
+        }
+        .event-item:last-child { border-bottom: none; }
+        .event-time { color: var(--muted); font-family: 'Consolas', monospace; font-size: 10px; flex-shrink: 0; width: 70px; }
+        .event-badge {
+            font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 6px;
+            flex-shrink: 0; min-width: 60px; text-align: center;
+        }
+        .event-badge.open { background: rgba(41,121,255,0.2); color: var(--blue); }
+        .event-badge.close_win { background: rgba(0,230,118,0.2); color: var(--green); }
+        .event-badge.close_loss { background: rgba(255,23,68,0.2); color: var(--red); }
+        .event-badge.signal { background: rgba(255,196,0,0.2); color: var(--yellow); }
+        .event-badge.warmup { background: rgba(255,109,0,0.2); color: var(--orange); }
+        .event-badge.live { background: rgba(0,230,118,0.2); color: var(--green); }
+        .event-badge.error { background: rgba(255,23,68,0.2); color: var(--red); }
+        .event-msg { color: var(--text); flex: 1; font-family: 'Consolas', monospace; }
+        .event-strat { color: var(--muted); font-size: 10px; margin-left: auto; }
+
+        /* ─── Right sidebar ─── */
+        .right-bar { display: flex; flex-direction: column; gap: 10px; }
+        .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 10px; }
+        .stat-box {
+            background: var(--bg2); border-radius: 6px; padding: 8px;
+            text-align: center; border: 1px solid var(--border);
+        }
+        .stat-box .val { font-size: 16px; font-weight: 700; font-family: 'Consolas', monospace; }
+        .stat-box .lbl { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 3px; }
+
+        /* ─── Tabs ─── */
+        .tab-bar { display: flex; gap: 4px; margin-bottom: 12px; }
+        .tab-btn {
+            padding: 6px 14px; background: var(--bg3); border: 1px solid var(--border);
+            border-radius: 6px; cursor: pointer; color: var(--muted);
+            font-size: 11px; font-weight: 600; transition: all 0.2s;
+        }
+        .tab-btn.active { background: var(--bg4); border-color: var(--blue); color: var(--blue); }
+
+        /* ─── Trades table (full) ─── */
+        .full-trades table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        .full-trades th {
+            text-align: left; padding: 8px 6px; font-size: 9px; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.5px; color: var(--muted);
+            border-bottom: 2px solid var(--border); white-space: nowrap;
+        }
+        .full-trades td {
+            padding: 8px 6px; border-bottom: 1px solid rgba(30,45,69,0.4);
+            white-space: nowrap; font-family: 'Consolas', monospace;
+        }
+        .full-trades tr:hover td { background: rgba(41,121,255,0.03); }
+        .exit-chip {
+            display: inline-block; padding: 1px 6px; border-radius: 6px;
+            font-size: 9px; font-weight: 700;
+        }
+        .exit-tp { background: rgba(0,230,118,0.15); color: var(--green); }
+        .exit-sl { background: rgba(255,23,68,0.15); color: var(--red); }
+        .exit-to { background: rgba(255,196,0,0.15); color: var(--yellow); }
+
+        /* ─── Analytics ─── */
+        .analytics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+        .analytic-card {
+            background: var(--bg2); border-radius: 6px; padding: 10px;
+            border: 1px solid var(--border); text-align: center;
+        }
+        .analytic-card .val { font-size: 18px; font-weight: 700; font-family: 'Consolas', monospace; }
+        .analytic-card .lbl { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 3px; }
+    </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+const API = '/api';
+
+const STRATS = {
+    strategy1: { label: 'S1: Long Breakout', color: '#2979ff', key: 's1' },
+    strategy2: { label: 'S2: Long Relaxed',  color: '#00e676', key: 's2' },
+    strategy3: { label: 'S3: Long/Short',    color: '#aa00ff', key: 's3' },
+    strategy4: { label: 'S4: EMA Cross',     color: '#ff6d00', key: 's4' },
+    strategy5: { label: 'S5: VWAP Momentum', color: '#00e5ff', key: 's5' },
+};
+const STRAT_KEYS = Object.keys(STRATS);
+
+// ─── Helpers ────────────────────────────────────────────────────────────────
+const fmt$ = (n, d=2) => n != null ? '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits:d, maximumFractionDigits:d}) : '—';
+const pct  = (n, d=2) => n != null ? ((n>=0?'+':'')+Number(n).toFixed(d)+'%') : '—';
+const num  = n => n != null ? Number(n).toLocaleString() : '—';
+const ts   = () => new Date().toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'});
+
+// ─── Warmup Overlay ─────────────────────────────────────────────────────────
+function WarmupOverlay({ current, total, pct }) {
+    return (
+        <div className="warmup-overlay">
+            <div className="warmup-title">LIVE STREAM WARMUP</div>
+            <div className="warmup-sub">Collecting {total} candles from Binance...</div>
+            <div className="warmup-bar-wrap">
+                <div className="warmup-bar" style={{width: pct+'%'}} />
+            </div>
+            <div className="warmup-count">{current} / {total} candles ({pct}%)</div>
+            <div className="warmup-hint">
+                Collecting live 1-minute candles to bootstrap slow indicators (EMA200).
+                Strategies will activate automatically once warmup is complete.
+                No historical data — 100% live stream.
+            </div>
+        </div>
+    );
+}
+
+// ─── Strategy Card ──────────────────────────────────────────────────────────
+function StratCard({ name, metrics, analytics, enabled, onToggle, livePrice, prevPrice }) {
+    const m = metrics || {};
+    const stratColor = STRATS[name]?.color || '#2979ff';
+    const livePnl = m.current_equity != null ? m.current_equity - (m.initial_capital || 0) : null;
+    const livePnlCls = livePnl == null ? '' : livePnl >= 0 ? 'up' : 'down';
+
+    return (
+        <div className={`strat-card ${STRATS[name]?.key}`}>
+            <div className="strat-header">
+                <div>
+                    <div className="strat-name">{STRATS[name]?.label}</div>
+                    <div className="strat-capital">{fmt$(m.current_equity)}</div>
+                </div>
+            </div>
+            <div className="strat-live-pnl" style={{color: livePnl == null ? '#fff' : livePnl >= 0 ? '#00e676' : '#ff1744'}}>
+                {livePnl != null ? fmt$(livePnl) : '—'}
+            </div>
+            <div className="strat-metrics">
+                <div className="strat-metric"><span className="lbl">Return</span><span className={`val ${livePnlCls}`}>{pct(m.total_return)}</span></div>
+                <div className="strat-metric"><span className="lbl">Trades</span><span className="val">{m.trade_count || 0}</span></div>
+                <div className="strat-metric"><span className="lbl">Win%</span><span className="val">{analytics?.win_rate != null ? analytics.win_rate+'%' : '—'}</span></div>
+                <div className="strat-metric"><span className="lbl">Max DD</span><span className="val" style={{color:'#ff1744'}}>{m.max_drawdown != null ? pct(-m.max_drawdown) : '—'}</span></div>
+            </div>
+            <label className="strat-toggle">
+                <input type="checkbox" checked={enabled} onChange={() => onToggle(name)} />
+                <span className="slider"></span>
+            </label>
+        </div>
+    );
+}
+
+// ─── Positions Panel ──────────────────────────────────────────────────────────
+function PositionsPanel({ positions, livePrice, prevPrice }) {
+    const flashRef = useRef({});
+    const prevPriceRef = useRef(livePrice);
+
+    useEffect(() => {
+        if (livePrice && prevPriceRef.current && livePrice !== prevPriceRef.current) {
+            const dir = livePrice > prevPriceRef.current ? 'up' : 'down';
+            const el = document.getElementById('live-price-el');
+            if (el) { el.className='price-main '+dir; }
+            const posRows = document.querySelectorAll('.pos-pnl-cell');
+            posRows.forEach(r => {
+                r.classList.remove('flash-green','flash-red');
+                void r.offsetWidth;
+                r.classList.add(dir==='up'?'flash-green':'flash-red');
+            });
+        }
+        prevPriceRef.current = livePrice;
+    }, [livePrice]);
+
+    return (
+        <div className="panel">
+            <div className="panel-head">
+                <span className="panel-title">Live Positions</span>
+                <span style={{fontSize:10,color:'#4a6080'}}>{positions.length} open</span>
+            </div>
+            <div className="panel-body" style={{padding:'0',maxHeight:'unset'}}>
+                {positions.length === 0 ? (
+                    <div className="empty">No open positions — waiting for signals...</div>
+                ) : (
+                    <table className="pos-table">
+                        <thead>
+                            <tr>
+                                <th>Strategy</th><th>Dir</th><th>Entry</th><th>Live</th>
+                                <th>SL</th><th>TP</th><th>U.P&L</th><th>%</th><th>Status</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {positions.map((p,i) => {
+                                const pct_ = p.unrealized_pnl_pct || 0;
+                                const cls = pct_ >= 0 ? 'up' : 'down';
+                                return (
+                                    <tr key={i}>
+                                        <td><span style={{color:STRATS[p.strategy]?.color,fontWeight:700,fontSize:10}}>{p.strategy}</span></td>
+                                        <td><span className={`dir-chip ${p.direction==='long'?'dir-long':'dir-short'}`}>{p.direction.toUpperCase()}</span></td>
+                                        <td>{fmt$(p.entry_price, 2)}</td>
+                                        <td id="live-price-el" className={`price-main ${livePrice>p.entry_price?'up':livePrice<p.entry_price?'down':'neutral'}`} style={{fontSize:12}}>{fmt$(livePrice,2)}</td>
+                                        <td style={{color:'#ff1744'}}>{fmt$(p.stop_loss,2)}</td>
+                                        <td style={{color:'#00e676'}}>{fmt$(p.take_profit,2)}</td>
+                                        <td className={`pos-pnl-cell ${cls}`} style={{fontWeight:700,fontSize:12}}>{fmt$(p.unrealized_pnl)}</td>
+                                        <td className={cls} style={{fontSize:11}}>{pct(p.unrealized_pnl_pct)}</td>
+                                        <td><div className="pos-status"><span className="dot"></span>LIVE</div></td>
+                                    </tr>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                )}
+            </div>
+        </div>
+    );
+}
+
+// ─── Event Feed ─────────────────────────────────────────────────────────────
+function EventFeed({ events }) {
+    const ref = useRef(null);
+    useEffect(() => {
+        if (ref.current) ref.current.scrollTop = ref.current.scrollHeight;
+    }, [events.length]);
+    return (
+        <div className="panel">
+            <div className="panel-head">
+                <span className="panel-title">Live Event Feed</span>
+                <span style={{fontSize:10,color:'#4a6080'}}>{events.length} events</span>
+            </div>
+            <div className="panel-body event-feed" ref={ref}>
+                {events.length === 0 && <div className="empty">No events yet...</div>}
+                {events.map((e,i) => (
+                    <div className="event-item" key={i}>
+                        <span className="event-time">{e.time}</span>
+                        <span className={`event-badge ${e.badge}`}>{e.badge.toUpperCase()}</span>
+                        <span className="event-msg">{e.msg}</span>
+                        {e.strat && <span className="event-strat" style={{color:STRATS[e.strat]?.color}}>{e.strat}</span>}
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+}
+
+// ─── Live Chart ─────────────────────────────────────────────────────────────
+function LiveChart({ candles }) {
+    const canvasRef = useRef(null);
+    const chartRef = useRef(null);
+
+    useEffect(() => {
+        if (!candles || candles.length < 2 || !canvasRef.current) return;
+        const closes = candles.map(c => c.close);
+        const times = candles.map(c => new Date(c.open_time));
+        const volumes = candles.map(c => c.volume);
+
+        if (chartRef.current) chartRef.current.destroy();
+        chartRef.current = new Chart(canvasRef.current, {
+            type: 'bar',
+            data: {
+                labels: times.map(t => t.toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit'})),
+                datasets: [
+                    {
+                        type: 'line',
+                        label: 'BTC/USDT',
+                        data: closes,
+                        borderColor: '#2979ff',
+                        borderWidth: 1.5,
+                        pointRadius: 0,
+                        tension: 0.1,
+                        yAxisID: 'y',
+                        fill: false,
+                    },
+                    {
+                        type: 'bar',
+                        label: 'Volume',
+                        data: volumes,
+                        backgroundColor: 'rgba(41,121,255,0.2)',
+                        borderWidth: 0,
+                        yAxisID: 'yVol',
+                    }
+                ]
+            },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                animation: false,
+                plugins: { legend: { display: false } },
+                scales: {
+                    x: { ticks: { color: '#4a6080', maxTicksLimit: 12, maxRotation: 0, font:{size:9} }, grid:{color:'#1e2d45'} },
+                    y: { position: 'right', ticks: { color: '#4a6080', font:{size:9} }, grid:{color:'#1e2d45'} },
+                    yVol: { position: 'left', display: false, max: Math.max(...volumes)*4 }
+                }
+            }
+        });
+        return () => { if (chartRef.current) chartRef.current.destroy(); };
+    }, [candles]);
+
+    return (
+        <div className="panel">
+            <div className="panel-head">
+                <span className="panel-title">Live Price Chart — {candles.length} Candles</span>
+            </div>
+            <div className="chart-wrap">
+                <canvas ref={canvasRef}></canvas>
+            </div>
+        </div>
+    );
+}
+
+// ─── Equity Charts ───────────────────────────────────────────────────────────
+function EquityCharts({ equityData }) {
+    const canvasRef = useRef(null);
+    const chartRef = useRef(null);
+
+    useEffect(() => {
+        if (!canvasRef.current) return;
+        if (chartRef.current) chartRef.current.destroy();
+
+        const datasets = STRAT_KEYS
+            .filter(k => equityData[k] && equityData[k].length > 1)
+            .map(k => ({
+                label: STRATS[k].label,
+                data: equityData[k].map(d => d.equity),
+                borderColor: STRATS[k].color,
+                borderWidth: 1.5, pointRadius: 0, tension: 0.1, fill: false,
+            }));
+
+        if (datasets.length === 0) return;
+
+        const labels = equityData['strategy1']?.map(d =>
+            new Date(d.timestamp).toLocaleTimeString('en-US',{hour12:false})
+        ) || [];
+
+        chartRef.current = new Chart(canvasRef.current, {
+            type: 'line',
+            data: { labels, datasets },
+            options: {
+                responsive: true, maintainAspectRatio: false,
+                plugins: { legend: { labels: { color: '#4a6080', font:{size:10}, boxWidth:12 } } },
+                scales: {
+                    x: { ticks:{color:'#4a6080',maxTicksLimit:10,maxRotation:0,font:{size:9}}, grid:{color:'#1e2d45'} },
+                    y: { ticks:{color:'#4a6080',font:{size:9}}, grid:{color:'#1e2d45'} }
+                }
+            }
+        });
+        return () => { if (chartRef.current) chartRef.current.destroy(); };
+    }, [equityData]);
+
+    return (
+        <div className="equity-row">
+            <div className="panel">
+                <div className="panel-head">
+                    <span className="panel-title">Equity Curve — All Strategies</span>
+                </div>
+                <div className="equity-chart" style={{height:180,padding:10}}>
+                    <canvas ref={canvasRef}></canvas>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ─── Trades Table ────────────────────────────────────────────────────────────
+function TradesTable({ history }) {
+    const fmtDur = (e, ex) => {
+        if (!e || !ex) return '—';
+        const h = (new Date(ex) - new Date(e)) / 3600000;
+        return h < 1 ? `${Math.round(h*60)}m` : `${h.toFixed(1)}h`;
+    };
+    return (
+        <div className="full-trades panel">
+            <div className="panel-head">
+                <span className="panel-title">Trade History ({history.length})</span>
+            </div>
+            <div className="panel-body" style={{maxHeight:400}}>
+                {history.length === 0 ? <div className="empty">No trades yet.</div> : (
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>#</th><th>Strategy</th><th>Dir</th><th>Entry</th><th>Exit</th>
+                                <th>P&L</th><th>Exit</th><th>Fee</th><th>Duration</th><th>Entry Time</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {history.map((t,i) => (
+                                <tr key={t.id}>
+                                    <td style={{color:'#4a6080'}}>{history.length-i}</td>
+                                    <td><span style={{color:STRATS[t.strategy]?.color,fontWeight:700}}>{t.strategy}</span></td>
+                                    <td><span className={`dir-chip ${t.direction==='long'?'dir-long':'dir-short'}`}>{t.direction.toUpperCase()}</span></td>
+                                    <td>{fmt$(t.entry_price,2)}</td>
+                                    <td>{fmt$(t.exit_price,2)}</td>
+                                    <td className={t.pnl>=0?'up':'down'} style={{fontWeight:700}}>{fmt$(t.pnl)}</td>
+                                    <td>
+                                        {t.exit_reason==='tp_hit' && <span className="exit-chip exit-tp">TP HIT</span>}
+                                        {t.exit_reason==='sl_hit' && <span className="exit-chip exit-sl">SL HIT</span>}
+                                        {t.exit_reason==='timeout' && <span className="exit-chip exit-to">TIMEOUT</span>}
+                                    </td>
+                                    <td style={{color:'#4a6080'}}>{fmt$(t.fee)}</td>
+                                    <td>{fmtDur(t.entry_time, t.exit_time)}</td>
+                                    <td style={{color:'#4a6080',fontSize:10}}>{new Date(t.entry_time).toLocaleString()}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                )}
+            </div>
+        </div>
+    );
+}
+
+// ─── Analytics Panel ─────────────────────────────────────────────────────────
+function AnalyticsPanel({ analytics, metrics }) {
+    const totalTrades = Object.values(analytics||{}).reduce((s,a)=>s+(a.total_trades||0),0);
+    const totalWins   = Object.values(analytics||{}).reduce((s,a)=>s+(a.wins||0),0);
+    const totalLosses = Object.values(analytics||{}).reduce((s,a)=>s+(a.losses||0),0);
+    const totalNet    = Object.values(analytics||{}).reduce((s,a)=>s+(a.net_pnl||0),0);
+    const winRate     = totalTrades > 0 ? ((totalWins/totalTrades)*100).toFixed(1) : '0';
+    const totalFees   = Object.values(analytics||{}).reduce((s,a)=>s+(a.total_fees||0),0);
+    return (
+        <div className="panel">
+            <div className="panel-head">
+                <span className="panel-title">Portfolio Analytics</span>
+            </div>
+            <div className="panel-body">
+                <div className="analytics-grid">
+                    <div className="analytic-card">
+                        <div className="val" style={{color:totalNet>=0?'#00e676':'#ff1744'}}>{fmt$(totalNet)}</div>
+                        <div className="lbl">Net P&L</div>
+                    </div>
+                    <div className="analytic-card">
+                        <div className="val" style={{color:winRate>=50?'#00e676':'#ff1744'}}>{winRate}%</div>
+                        <div className="lbl">Win Rate</div>
+                    </div>
+                    <div className="analytic-card">
+                        <div className="val">{totalTrades}</div>
+                        <div className="lbl">Total Trades</div>
+                    </div>
+                    <div className="analytic-card">
+                        <div className="val">{totalWins}W / {totalLosses}L</div>
+                        <div className="lbl">Wins / Losses</div>
+                    </div>
+                    <div className="analytic-card">
+                        <div className="val" style={{color:'#ff1744'}}>{fmt$(totalFees)}</div>
+                        <div className="lbl">Total Fees</div>
+                    </div>
+                    <div className="analytic-card">
+                        <div className="val">{fmt$(Object.values(metrics||{}).reduce((s,m)=>s+(m.current_equity||0),0))}</div>
+                        <div className="lbl">Total Equity</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+// ─── App ─────────────────────────────────────────────────────────────────────
+function App() {
+    const [isWarmedUp, setIsWarmedUp] = useState(false);
+    const [warmupProgress, setWarmupProgress] = useState({ current: 0, total: 200, pct: 0 });
+    const [livePrice, setLivePrice] = useState(null);
+    const [prevPrice, setPrevPrice] = useState(null);
+    const [tickerData, setTickerData] = useState({});
+    const [metrics, setMetrics] = useState({});
+    const [analytics, setAnalytics] = useState({});
+    const [positions, setPositions] = useState([]);
+    const [tradeHistory, setTradeHistory] = useState([]);
+    const [equityData, setEquityData] = useState({});
+    const [candles, setCandles] = useState([]);
+    const [events, setEvents] = useState([]);
+    const [stratEnabled, setStratEnabled] = useState({});
+    const [activeTab, setActiveTab] = useState('live');
+    const [connStatus, setConnStatus] = useState('connecting');
+    const prevPriceRef = useRef(null);
+    const prevPosRef = useRef([]);
+
+    // ── SSE Connection ───────────────────────────────────────────────────
+    useEffect(() => {
+        let es;
+        let reconnectTimer;
+
+        function connect() {
+            setConnStatus('connecting');
+            es = new EventSource(API + '/stream');
+            es.onopen = () => setConnStatus('connected');
+            es.onmessage = (e) => {
+                try {
+                    const msg = JSON.parse(e.data);
+                    handleSSE(msg);
+                } catch {}
+            };
+            es.onerror = () => {
+                setConnStatus('disconnected');
+                es.close();
+                reconnectTimer = setTimeout(connect, 3000);
+            };
+        }
+
+        function handleSSE(msg) {
+            switch (msg.type) {
+                case 'warmup_progress':
+                    setWarmupProgress(msg.data);
+                    addEvent('warmup', `Candle ${msg.data.current}/${msg.data.total}`, msg.data.pct+'%');
+                    break;
+                case 'warmup_complete':
+                    setIsWarmedUp(true);
+                    addEvent('live', 'Warmup complete — strategies active', '');
+                    break;
+                case 'live_price': {
+                    const p = msg.data.price;
+                    if (p) {
+                        setPrevPrice(prevPriceRef.current);
+                        prevPriceRef.current = p;
+                        setLivePrice(p);
+                        if (msg.data.change_24h != null) setTickerData(msg.data);
+                    }
+                    break;
+                }
+                case 'trade_update':
+                    // Refresh positions and history
+                    refreshTradeData();
+                    break;
+                case 'candle_update':
+                    break;
+            }
+        }
+
+        connect();
+        // Initial data load
+        fetchAllData();
+
+        const poll = setInterval(() => {
+            fetchAllData();
+        }, 15000);
+
+        return () => {
+            es?.close();
+            clearTimeout(reconnectTimer);
+            clearInterval(poll);
+        };
+    }, []);
+
+    async function fetchAllData() {
+        try {
+            const [mRes, aRes, tRes, hRes, eRes, kRes, sRes] = await Promise.all([
+                fetch(API+'/metrics').then(r=>r.json()),
+                fetch(API+'/analytics').then(r=>r.json()),
+                fetch(API+'/active-trades').then(r=>r.json()),
+                fetch(API+'/trade-history?limit=100').then(r=>r.json()),
+                fetch(API+'/equity-curve?limit=300').then(r=>r.json()),
+                fetch(API+'/klines?limit=100').then(r=>r.json()),
+                fetch(API+'/status').then(r=>r.json()),
+            ]);
+            setMetrics(mRes);
+            setAnalytics(aRes);
+            setPositions(tRes || []);
+            setTradeHistory(hRes || []);
+            setEquityData(eRes || {});
+            setCandles(kRes || []);
+            if (sRes.strategies) {
+                setStratEnabled(
+                    Object.fromEntries(
+                        Object.entries(sRes.strategies).map(([k,v])=>[k, v.enabled])
+                    )
+                );
+            }
+        } catch(e) { console.error('Fetch error:', e); }
+    }
+
+    async function refreshTradeData() {
+        try {
+            const [tRes, hRes, mRes] = await Promise.all([
+                fetch(API+'/active-trades').then(r=>r.json()),
+                fetch(API+'/trade-history?limit=20').then(r=>r.json()),
+                fetch(API+'/metrics').then(r=>r.json()),
+            ]);
+            setPositions(tRes||[]);
+            setTradeHistory(prev=>[...(hRes||[]), ...prev].slice(0,100));
+            setMetrics(mRes||{});
+        } catch {}
+    }
+
+    function addEvent(badge, msg, strat) {
+        setEvents(prev=>[{
+            time: ts(),
+            badge,
+            msg: msg + (strat ? ' '+strat : ''),
+            strat: typeof strat==='string'&&strat.startsWith('strategy') ? strat : null,
+        }, ...prev].slice(0,200));
+    }
+
+    const handleToggle = async (name) => {
+        const next = !stratEnabled[name];
+        try {
+            await fetch(API+'/strategies/'+name+'/toggle', {
+                method:'POST', headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({enabled:next}),
+            });
+            setStratEnabled(prev=>({...prev, [name]:next}));
+            addEvent(next?'live':'warmup', next?'Strategy enabled':'Strategy paused', name);
+        } catch(e) { console.error(e); }
+    };
+
+    const totalEquity = Object.values(metrics).reduce((s,m)=>s+(m.current_equity||0),0);
+    const totalInit   = Object.values(metrics).reduce((s,m)=>s+(m.initial_capital||0),0);
+    const totalPnl    = totalEquity - totalInit;
+
+    const changePct = tickerData.price_change_pct;
+    const changeCls = changePct > 0 ? 'up' : changePct < 0 ? 'down' : '';
+    const priceCls  = livePrice && prevPrice ? (livePrice>prevPrice?'up':livePrice<prevPrice?'down':'neutral') : 'neutral';
+
+    if (!isWarmedUp) {
+        return <WarmupOverlay {...warmupProgress} />;
+    }
+
+    return (
+        <>
+            {/* Header */}
+            <div className="header">
+                <div className="header-logo">PAPER<span>TRADING</span></div>
+                <div className="header-sep" />
+                <div className="live-badge">
+                    <span className="dot pulse"></span>LIVE
+                </div>
+                <div className="price-block">
+                    <div className="price-main" id="live-price-el" style={{color:'var(--text)'}}>
+                        {livePrice ? '$'+livePrice.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2}) : '—'}
+                    </div>
+                    {changePct != null && (
+                        <div className="price-change" style={{color:changePct>=0?'#00e676':'#ff1744'}}>
+                            {changePct>=0?'▲':'▼'} {Math.abs(changePct).toFixed(2)}%
+                        </div>
+                    )}
+                </div>
+                {tickerData.high_24h && (
+                    <div className="price-24h">
+                        H: <span>{'$'+Number(tickerData.high_24h).toLocaleString('en-US',{minimumFractionDigits:2})}</span>
+                        {'  '}L: <span>{'$'+Number(tickerData.low_24h).toLocaleString('en-US',{minimumFractionDigits:2})}</span>
+                        {'  '}Vol: <span>{(tickerData.volume/1000).toFixed(1)}K</span>
+                    </div>
+                )}
+                <div className="header-right">
+                    <div className={`conn-status ${connStatus}`}>
+                        <span className="dot"></span>
+                        {connStatus === 'connected' ? 'SSE LIVE' : connStatus === 'connecting' ? 'CONNECTING...' : 'RECONNECTING...'}
+                    </div>
+                    <a href="/terminal" className="nav-link">Terminal</a>
+                    <a href="/monitor" className="nav-link">Monitor</a>
+                </div>
+            </div>
+
+            <div className="main">
+                {/* Summary bar */}
+                <div style={{display:'grid',gridTemplateColumns:'repeat(5,1fr)',gap:10,marginBottom:12}}>
+                    {[
+                        {lbl:'Total Equity', val:fmt$(totalEquity), cls:totalPnl>=0?'#00e676':'#ff1744'},
+                        {lbl:'Total P&L', val:fmt$(totalPnl), cls:totalPnl>=0?'#00e676':'#ff1744'},
+                        {lbl:'Live BTC', val:livePrice?'$'+livePrice.toLocaleString('en-US',{minimumFractionDigits:2}):'—', cls:'#e2e8f0'},
+                        {lbl:'Open Positions', val:positions.length, cls:positions.length>0?'#ff6d00':'#4a6080'},
+                        {lbl:'Total Trades', val:tradeHistory.length, cls:'#2979ff'},
+                    ].map((s,i)=>(
+                        <div key={i} style={{background:'var(--bg3)',border:'1px solid var(--border)',borderRadius:8,padding:'10px 14px',textAlign:'center'}}>
+                            <div style={{fontSize:17,fontWeight:700,fontFamily:'Consolas,monospace',color:s.cls}}>{s.val}</div>
+                            <div style={{fontSize:9,color:'#4a6080',textTransform:'uppercase',letterSpacing:'0.5px',marginTop:3}}>{s.lbl}</div>
+                        </div>
+                    ))}
+                </div>
+
+                {/* Strategy cards */}
+                <div className="strat-row">
+                    {STRAT_KEYS.map(name => (
+                        <StratCard
+                            key={name} name={name}
+                            metrics={metrics[name]}
+                            analytics={analytics[name]}
+                            enabled={stratEnabled[name] !== false}
+                            onToggle={handleToggle}
+                            livePrice={livePrice}
+                            prevPrice={prevPrice}
+                        />
+                    ))}
+                </div>
+
+                {/* Tabs */}
+                <div className="tab-bar">
+                    {[['live','Live View'],['trades','Trades'],['analytics','Analytics']].map(([k,v])=>(
+                        <button key={k} className={`tab-btn ${activeTab===k?'active':''}`} onClick={()=>setActiveTab(k)}>{v}</button>
+                    ))}
+                </div>
+
+                {/* Live tab */}
+                {activeTab === 'live' && (
+                    <div className="two-col">
+                        <div style={{display:'flex',flexDirection:'column',gap:10}}>
+                            <PositionsPanel positions={positions} livePrice={livePrice} prevPrice={prevPrice} />
+                            <EquityCharts equityData={equityData} />
+                            <LiveChart candles={candles} />
+                        </div>
+                        <div className="right-bar">
+                            <EventFeed events={events} />
+                            <AnalyticsPanel analytics={analytics} metrics={metrics} />
+                        </div>
+                    </div>
+                )}
+
+                {/* Trades tab */}
+                {activeTab === 'trades' && (
+                    <TradesTable history={tradeHistory} />
+                )}
+
+                {/* Analytics tab */}
+                {activeTab === 'analytics' && (
+                    <div style={{display:'flex',flexDirection:'column',gap:12}}>
+                        <EquityCharts equityData={equityData} />
+                        {STRAT_KEYS.map(name => {
+                            const a = analytics[name]||{};
+                            const m = metrics[name]||{};
+                            if (!a.total_trades) return null;
+                            return (
+                                <div key={name} className="panel">
+                                    <div className="panel-head">
+                                        <span className="panel-title" style={{color:STRATS[name].color}}>{STRATS[name].label}</span>
+                                    </div>
+                                    <div className="panel-body">
+                                        <div className="analytics-grid">
+                                            {[
+                                                {l:'Total Trades', v:a.total_trades||0},
+                                                {l:'Win Rate', v:(a.win_rate||0)+'%', c:a.win_rate>=50?'#00e676':'#ff1744'},
+                                                {l:'Net P&L', v:fmt$(a.net_pnl||0), c:(a.net_pnl||0)>=0?'#00e676':'#ff1744'},
+                                                {l:'Profit Factor', v:(a.profit_factor||0).toFixed(2)},
+                                                {l:'Avg Win', v:fmt$(a.avg_win||0), c:'#00e676'},
+                                                {l:'Avg Loss', v:fmt$(a.avg_loss||0), c:'#ff1744'},
+                                                {l:'Best Trade', v:fmt$(a.best_trade||0), c:'#00e676'},
+                                                {l:'Worst Trade', v:fmt$(a.worst_trade||0), c:'#ff1744'},
+                                                {l:'Sharpe', v:(m.sharpe||0).toFixed(2)},
+                                                {l:'Max DD', v:pct(-(m.max_drawdown||0)), c:'#ff1744'},
+                                                {l:'Return', v:pct(m.total_return||0), c:(m.total_return||0)>=0?'#00e676':'#ff1744'},
+                                                {l:'CAGR', v:pct(m.cagr||0), c:(m.cagr||0)>=0?'#00e676':'#ff1744'},
+                                            ].map((s,i)=>(
+                                                <div key={i} className="analytic-card">
+                                                    <div className="val" style={{color:s.c||'inherit'}}>{s.v}</div>
+                                                    <div className="lbl">{s.l}</div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+        </>
+    );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
