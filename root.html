@@ -1,0 +1,660 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Paper Trading Dashboard — Detailed</title>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0a0e17; --bg-secondary: #111827; --bg-card: #1a2235;
+            --border: #2a3548; --text: #e2e8f0; --text-muted: #64748b;
+            --blue: #3b82f6; --green: #22c55e; --red: #ef4444; --yellow: #f59e0b;
+            --purple: #a855f7; --cyan: #06b6d4; --orange: #f97316;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: var(--bg-primary); color: var(--text); font-size: 13px; }
+        .container { max-width: 1800px; margin: 0 auto; padding: 16px; }
+        
+        /* Header */
+        .header { display: flex; justify-content: space-between; align-items: center; background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px 24px; margin-bottom: 16px; }
+        .header h1 { font-size: 22px; color: var(--blue); }
+        .header .subtitle { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+        .header-right { display: flex; align-items: center; gap: 20px; }
+        .price-display { font-size: 32px; font-weight: 700; color: #f59e0b; font-family: 'Consolas', monospace; }
+        .status-badge { display: flex; align-items: center; gap: 6px; padding: 6px 14px; background: rgba(34,197,94,0.1); border: 1px solid var(--green); border-radius: 20px; color: var(--green); font-size: 12px; font-weight: 600; }
+        .status-dot { width: 8px; height: 8px; background: var(--green); border-radius: 50%; animation: pulse 1.5s infinite; }
+        @keyframes pulse { 0%,100% { opacity:1; box-shadow: 0 0 0 0 rgba(34,197,94,0.5); } 50% { opacity:0.7; box-shadow: 0 0 0 6px rgba(34,197,94,0); } }
+        .refresh-btn { background: var(--bg-secondary); border: 1px solid var(--border); color: var(--text-muted); padding: 8px 16px; border-radius: 6px; cursor: pointer; font-size: 12px; transition: all 0.2s; }
+        .refresh-btn:hover { border-color: var(--blue); color: var(--blue); }
+        
+        /* Grid layout */
+        .grid { display: grid; gap: 16px; }
+        .grid-3 { grid-template-columns: repeat(3, 1fr); }
+        .grid-2 { grid-template-columns: repeat(2, 1fr); }
+        .grid-4 { grid-template-columns: repeat(4, 1fr); }
+        
+        /* Cards */
+        .card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+        .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }
+        .card-title { font-size: 13px; font-weight: 600; color: var(--text); text-transform: uppercase; letter-spacing: 0.5px; }
+        
+        /* Strategy cards */
+        .strategy-card { position: relative; overflow: hidden; }
+        .strategy-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; }
+        .strategy-card.s1::before { background: var(--blue); }
+        .strategy-card.s2::before { background: var(--green); }
+        .strategy-card.s3::before { background: var(--purple); }
+        .strategy-name { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+        .strategy-capital { font-size: 24px; font-weight: 700; font-family: 'Consolas', monospace; }
+        .strategy-metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 12px; }
+        .metric { display: flex; justify-content: space-between; padding: 4px 0; font-size: 12px; }
+        .metric .label { color: var(--text-muted); }
+        .metric .value { font-weight: 600; font-family: 'Consolas', monospace; }
+        
+        /* Toggle */
+        .toggle { position: relative; width: 44px; height: 22px; cursor: pointer; flex-shrink: 0; }
+        .toggle input { opacity: 0; width: 0; height: 0; }
+        .toggle .slider { position: absolute; inset: 0; background: #374151; border-radius: 22px; transition: 0.3s; }
+        .toggle .slider::before { content: ''; position: absolute; width: 16px; height: 16px; left: 3px; bottom: 3px; background: white; border-radius: 50%; transition: 0.3s; }
+        .toggle input:checked + .slider { background: var(--green); }
+        .toggle input:checked + .slider::before { transform: translateX(22px); }
+        
+        /* Tables */
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        th { text-align: left; padding: 10px 8px; border-bottom: 2px solid var(--border); color: var(--text-muted); font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px; white-space: nowrap; }
+        td { padding: 10px 8px; border-bottom: 1px solid rgba(42,53,72,0.5); white-space: nowrap; }
+        tr:hover td { background: rgba(59,130,246,0.05); }
+        
+        /* Chips */
+        .chip { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700; }
+        .chip-long { background: rgba(59,130,246,0.15); color: var(--blue); }
+        .chip-short { background: rgba(239,68,68,0.15); color: var(--red); }
+        .chip-tp { background: rgba(34,197,94,0.15); color: var(--green); }
+        .chip-sl { background: rgba(239,68,68,0.15); color: var(--red); }
+        .chip-timeout { background: rgba(245,158,11,0.15); color: var(--yellow); }
+        
+        /* Colors */
+        .pos { color: var(--green); }
+        .neg { color: var(--red); }
+        .mono { font-family: 'Consolas', monospace; }
+        
+        /* Chart */
+        .chart-container { position: relative; height: 280px; }
+        
+        /* Analytics section */
+        .analytics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+        .analytic-item { text-align: center; padding: 10px; background: var(--bg-secondary); border-radius: 8px; }
+        .analytic-item .val { font-size: 20px; font-weight: 700; font-family: 'Consolas', monospace; }
+        .analytic-item .lbl { font-size: 10px; color: var(--text-muted); text-transform: uppercase; margin-top: 4px; letter-spacing: 0.5px; }
+        
+        /* Progress bars */
+        .progress-bar { height: 6px; background: #1e293b; border-radius: 3px; overflow: hidden; margin-top: 4px; }
+        .progress-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+        
+        /* Trade detail */
+        .trade-detail { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 8px 0; }
+        .trade-detail-item { display: flex; flex-direction: column; align-items: center; padding: 8px; background: var(--bg-secondary); border-radius: 6px; }
+        .trade-detail-item .val { font-size: 14px; font-weight: 600; font-family: 'Consolas', monospace; }
+        .trade-detail-item .lbl { font-size: 10px; color: var(--text-muted); margin-top: 2px; }
+        
+        /* Tab nav */
+        .tab-nav { display: flex; gap: 4px; margin-bottom: 16px; }
+        .tab-btn { padding: 8px 16px; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: 6px 6px 0 0; cursor: pointer; color: var(--text-muted); font-size: 12px; font-weight: 500; transition: all 0.2s; }
+        .tab-btn.active { background: var(--bg-card); border-color: var(--blue); border-bottom-color: var(--bg-card); color: var(--blue); }
+        
+        /* Empty state */
+        .empty { text-align: center; padding: 40px; color: var(--text-muted); }
+        
+        /* Loading */
+        .loading { display: flex; justify-content: center; align-items: center; height: 100vh; }
+        .spinner { width: 36px; height: 36px; border: 3px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin 0.8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 8px; height: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-primary); }
+        ::-webkit-scrollbar-thumb { background: #334155; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef } = React;
+        const API = '/api';
+        
+        const STRATEGY_NAMES = {
+            strategy1: 'S1: Long-Only Breakout',
+            strategy2: 'S2: Long-Only Relaxed',
+            strategy3: 'S3: Long/Short Futures'
+        };
+        const STRATEGY_COLORS = { strategy1: '#3b82f6', strategy2: '#22c55e', strategy3: '#a855f7' };
+
+        // Formatting
+        const fmt = (n, d=2) => n != null ? '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits:d, maximumFractionDigits:d}) : '—';
+        const pct = n => n != null ? (n >= 0 ? '+' : '') + Number(n).toFixed(2) + '%' : '—';
+        const num = n => n != null ? Number(n).toLocaleString() : '—';
+        const dur = (entry, exit) => {
+            if (!entry || !exit) return '—';
+            const h = (new Date(exit) - new Date(entry)) / 3600000;
+            return h < 1 ? `${Math.round(h*60)}m` : `${h.toFixed(1)}h`;
+        };
+
+        // ===================== COMPONENTS =====================
+
+        // Stat mini card
+        function StatBox({ label, value, color }) {
+            return (
+                <div className="analytic-item">
+                    <div className="val" style={{color: color || 'inherit'}}>{value}</div>
+                    <div className="lbl">{label}</div>
+                </div>
+            );
+        }
+
+        // Strategy summary card
+        function StrategyCard({ name, metrics, analytics, enabled, onToggle }) {
+            const m = metrics || {};
+            const a = analytics || {};
+            return (
+                <div className={`card strategy-card s${name.slice(-1)}`}>
+                    <div className="card-header">
+                        <div>
+                            <div className="strategy-name">{STRATEGY_NAMES[name]}</div>
+                            <div className="strategy-capital" style={{color: STRATEGY_COLORS[name]}}>{fmt(m.current_equity)}</div>
+                        </div>
+                        <label className="toggle">
+                            <input type="checkbox" checked={enabled} onChange={() => onToggle(name)} />
+                            <span className="slider"></span>
+                        </label>
+                    </div>
+                    <div style={{display:'flex', gap:12, marginBottom:12, fontSize:11}}>
+                        <span style={{color: enabled ? '#22c55e' : '#ef4444', fontWeight:600}}>{enabled ? '● ACTIVE' : '● PAUSED'}</span>
+                        <span style={{color:'#64748b'}}>Trades: {a.total_trades || m.trade_count || 0}</span>
+                    </div>
+                    <div className="strategy-metrics">
+                        <div className="metric"><span className="label">Return</span><span className={`value ${m.total_return >= 0 ? 'pos' : 'neg'}`}>{pct(m.total_return)}</span></div>
+                        <div className="metric"><span className="label">CAGR</span><span className={`value ${m.cagr >= 0 ? 'pos' : 'neg'}`}>{pct(m.cagr)}</span></div>
+                        <div className="metric"><span className="label">Sharpe</span><span className="value">{m.sharpe || 0}</span></div>
+                        <div className="metric"><span className="label">Max DD</span><span className="value neg">{pct(-m.max_drawdown)}</span></div>
+                        <div className="metric"><span className="label">Win Rate</span><span className="value">{a.win_rate || 0}%</span></div>
+                        <div className="metric"><span className="label">Profit Factor</span><span className="value">{a.profit_factor || 0}</span></div>
+                    </div>
+                    {/* Win rate bar */}
+                    {a.win_rate > 0 && (
+                        <div style={{marginTop:8}}>
+                            <div style={{display:'flex', justifyContent:'space-between', fontSize:10, color:'#64748b'}}>
+                                <span>W: {a.wins || 0}</span>
+                                <span>L: {a.losses || 0}</span>
+                            </div>
+                            <div className="progress-bar">
+                                <div className="progress-fill" style={{width: `${a.win_rate || 0}%`, background: 'linear-gradient(90deg, #22c55e, #4ade80)'}}></div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        // Active Trade Detail
+        function ActiveTradeRow({ trade }) {
+            return (
+                <tr>
+                    <td><span style={{color: STRATEGY_COLORS[trade.strategy], fontWeight:600}}>{STRATEGY_NAMES[trade.strategy]?.split(':')[0]}</span></td>
+                    <td>{trade.symbol}</td>
+                    <td><span className={`chip ${trade.direction === 'long' ? 'chip-long' : 'chip-short'}`}>{trade.direction.toUpperCase()}</span></td>
+                    <td className="mono">{fmt(trade.entry_price)}</td>
+                    <td className="mono" style={{color:'#ef4444'}}>{fmt(trade.stop_loss)}</td>
+                    <td className="mono" style={{color:'#22c55e'}}>{fmt(trade.take_profit)}</td>
+                    <td className="mono">{trade.units?.toFixed(4)}</td>
+                    <td>{new Date(trade.entry_time).toLocaleString()}</td>
+                </tr>
+            );
+        }
+
+        // Trade History Row
+        function TradeHistoryRow({ trade }) {
+            const pnlColor = trade.pnl >= 0 ? 'pos' : 'neg';
+            return (
+                <tr>
+                    <td><span style={{color: STRATEGY_COLORS[trade.strategy], fontWeight:600}}>{STRATEGY_NAMES[trade.strategy]?.split(':')[0]}</span></td>
+                    <td><span className={`chip ${trade.direction === 'long' ? 'chip-long' : 'chip-short'}`}>{trade.direction.toUpperCase()}</span></td>
+                    <td className="mono">{fmt(trade.entry_price)}</td>
+                    <td className="mono">{fmt(trade.exit_price)}</td>
+                    <td className={`mono ${pnlColor}`} style={{fontWeight:700}}>{fmt(trade.pnl)}</td>
+                    <td>
+                        {trade.exit_reason === 'tp_hit' && <span className="chip chip-tp">✓ TP HIT</span>}
+                        {trade.exit_reason === 'sl_hit' && <span className="chip chip-sl">✗ SL HIT</span>}
+                        {trade.exit_reason === 'timeout' && <span className="chip chip-timeout">⏱ TIMEOUT</span>}
+                    </td>
+                    <td className="mono" style={{color:'#64748b'}}>{fmt(trade.fee)}</td>
+                    <td className="mono" style={{color:'#64748b'}}>{dur(trade.entry_time, trade.exit_time)}</td>
+                    <td>{new Date(trade.entry_time).toLocaleString()}</td>
+                    <td>{trade.exit_time ? new Date(trade.exit_time).toLocaleString() : '—'}</td>
+                </tr>
+            );
+        }
+
+        // ===================== MAIN APP =====================
+        function App() {
+            const [status, setStatus] = useState(null);
+            const [metrics, setMetrics] = useState(null);
+            const [analytics, setAnalytics] = useState(null);
+            const [activeTrades, setActiveTrades] = useState([]);
+            const [tradeHistory, setTradeHistory] = useState([]);
+            const [equityCurve, setEquityCurve] = useState({});
+            const [drawdownData, setDrawdownData] = useState({});
+            const [currentPrice, setCurrentPrice] = useState(null);
+            const [loading, setLoading] = useState(true);
+            const [strategyEnabled, setStrategyEnabled] = useState({});
+            const [activeTab, setActiveTab] = useState('overview');
+            const [expandedTrade, setExpandedTrade] = useState(null);
+            const equityChartRef = useRef(null);
+            const ddChartRef = useRef(null);
+            const eqChartInst = useRef(null);
+            const ddChartInst = useRef(null);
+
+            const fetchSummary = async () => {
+                try {
+                    const res = await fetch(API + '/summary').then(r => r.json());
+                    setStatus(res.status);
+                    setMetrics(res.metrics_summary);
+                    setActiveTrades(res.active_trades || []);
+                    setStrategyEnabled({
+                        strategy1: res.status.strategies?.strategy1?.enabled,
+                        strategy2: res.status.strategies?.strategy2?.enabled,
+                        strategy3: res.status.strategies?.strategy3?.enabled
+                    });
+                    setLoading(false);
+                } catch (e) {
+                    console.error('Summary fetch error:', e);
+                    setLoading(false);
+                }
+            };
+
+            // Lazy-load helpers for heavy endpoints
+            const loadAnalytics = async () => {
+                try {
+                    const a = await fetch(API + '/analytics').then(r => r.json());
+                    setAnalytics(a);
+                } catch(e) { console.warn('Analytics load failed', e); }
+            };
+            const loadTradeHistory = async () => {
+                try {
+                    const h = await fetch(API + '/trade-history?limit=500').then(r => r.json());
+                    setTradeHistory(h || []);
+                } catch(e) { console.warn('Trade history load failed', e); }
+            };
+            const loadCharts = async () => {
+                try {
+                    const e = await fetch(API + '/equity-curve?limit=300').then(r => r.json());
+                    const dd = await fetch(API + '/drawdown').then(r => r.json());
+                    setEquityCurve(e || {});
+                    setDrawdownData(dd || {});
+                } catch(e) { console.warn('Charts load failed', e); }
+            };
+
+            // 🚀 EVENT-DRIVEN: Load data ONCE on mount, listen to WebSocket for live updates
+            useEffect(() => {
+                fetchSummary(); // initial lightweight load
+
+                // Poll summary every 10s
+                const summaryInterval = setInterval(fetchSummary, 10000);
+
+                // Connect to price WebSocket for real-time prices
+                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+                let priceWS = null;
+                try {
+                    priceWS = new WebSocket(`${protocol}//${window.location.host}/api/ws/price`);
+                    priceWS.onmessage = (e) => {
+                        const data = JSON.parse(e.data);
+                        if (data.price) setCurrentPrice(data.price);
+                    };
+                    priceWS.onerror = () => console.warn('Price WebSocket disconnected');
+                } catch (err) {
+                    console.warn('WebSocket not available, price updates disabled');
+                }
+
+                // Non-critical heavy endpoint refresh (only if loaded) every 60s
+                const heavyRefresh = setInterval(() => {
+                    if (analytics) loadAnalytics();
+                    if (Object.keys(equityCurve || {}).length) loadCharts();
+                    if ((tradeHistory || []).length) loadTradeHistory();
+                }, 60000);
+
+                return () => {
+                    clearInterval(summaryInterval);
+                    clearInterval(heavyRefresh);
+                    if (priceWS) priceWS.close();
+                };
+            }, []);
+
+            // Equity chart
+            useEffect(() => {
+                if (!equityChartRef.current || !equityCurve) return;
+                if (eqChartInst.current) eqChartInst.current.destroy();
+                const datasets = [];
+                let idx = 0;
+                for (const [strategy, data] of Object.entries(equityCurve)) {
+                    if (data && data.length > 0) {
+                        datasets.push({
+                            label: STRATEGY_NAMES[strategy]?.split(':')[0] || strategy,
+                            data: data.map(d => d.equity),
+                            borderColor: [STRATEGY_COLORS[strategy]],
+                            borderWidth: 2, pointRadius: 0, tension: 0.1, fill: false
+                        });
+                        idx++;
+                    }
+                }
+                if (datasets.length === 0) return;
+                const labels = equityCurve.strategy1?.map(d => {
+                    const dt = new Date(d.timestamp);
+                    return dt.toLocaleDateString() + ' ' + dt.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+                }) || [];
+                eqChartInst.current = new Chart(equityChartRef.current, {
+                    type: 'line',
+                    data: { labels, datasets },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        plugins: { legend: { labels: { color: '#94a3b8', font: {size: 11} } } },
+                        scales: {
+                            x: { ticks: { color: '#64748b', maxTicksLimit: 12, maxRotation: 0, font: {size: 10} }, grid: { color: '#1e293b' } },
+                            y: { ticks: { color: '#64748b', font: {size: 10} }, grid: { color: '#1e293b' } }
+                        }
+                    }
+                });
+                return () => { if (eqChartInst.current) eqChartInst.current.destroy(); };
+            }, [equityCurve]);
+
+            // Drawdown chart
+            useEffect(() => {
+                if (!ddChartRef.current || !drawdownData) return;
+                if (ddChartInst.current) ddChartInst.current.destroy();
+                const datasets = [];
+                for (const [strategy, data] of Object.entries(drawdownData)) {
+                    if (data && data.length > 0) {
+                        datasets.push({
+                            label: STRATEGY_NAMES[strategy]?.split(':')[0] || strategy,
+                            data: data.map(d => d.drawdown),
+                            borderColor: STRATEGY_COLORS[strategy],
+                            backgroundColor: STRATEGY_COLORS[strategy] + '22',
+                            borderWidth: 1.5, pointRadius: 0, tension: 0.1, fill: true
+                        });
+                    }
+                }
+                if (datasets.length === 0) return;
+                ddChartInst.current = new Chart(ddChartRef.current, {
+                    type: 'line',
+                    data: { labels: datasets[0].data.map((_, i) => i), datasets },
+                    options: {
+                        responsive: true, maintainAspectRatio: false,
+                        plugins: { legend: { labels: { color: '#94a3b8', font: {size: 11} } } },
+                        scales: {
+                            x: { display: false },
+                            y: { ticks: { color: '#64748b', callback: v => v + '%', font: {size: 10} }, grid: { color: '#1e293b' }, reverse: true }
+                        }
+                    }
+                });
+                return () => { if (ddChartInst.current) ddChartInst.current.destroy(); };
+            }, [drawdownData]);
+
+            const handleToggle = async (name) => {
+                try {
+                    await fetch(API + '/strategies/' + name + '/toggle', {
+                        method: 'POST', headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({enabled: !strategyEnabled[name]})
+                    });
+                    setStrategyEnabled(prev => ({...prev, [name]: !prev[name]}));
+                    fetchSummary();
+                } catch(e) { console.error(e); }
+            };
+
+            // Lazy-load data when tabs are selected
+            useEffect(() => {
+                if (activeTab === 'analytics' && !analytics) loadAnalytics();
+                if (activeTab === 'trades' && (!tradeHistory || tradeHistory.length === 0)) loadTradeHistory();
+                if (activeTab === 'charts' && (!equityCurve || Object.keys(equityCurve).length === 0)) loadCharts();
+            }, [activeTab]);
+
+            if (loading) return <div className="loading"><div><div className="spinner"></div><div style={{color:'#64748b', marginTop:12}}>Connecting to trading engine...</div></div></div>;
+
+            const totalEquity = Object.values(metrics || {}).reduce((s, m) => s + (m.current_equity || 0), 0);
+            const totalPnl = totalEquity - Object.values(metrics || {}).reduce((s, m) => s + (m.initial_capital || 0), 0);
+            const totalTrades = Object.values(analytics || {}).reduce((s, a) => s + (a.total_trades || 0), 0);
+            const overallWinRate = (() => {
+                const wins = Object.values(analytics || {}).reduce((s, a) => s + (a.wins || 0), 0);
+                const losses = Object.values(analytics || {}).reduce((s, a) => s + (a.losses || 0), 0);
+                const total = wins + losses;
+                return total > 0 ? ((wins / total) * 100).toFixed(1) : 0;
+            })();
+
+            return (
+                <div className="container">
+                    {/* ===== HEADER ===== */}
+                    <div className="header">
+                        <div>
+                            <h1>Paper Trading Dashboard</h1>
+                            <div className="subtitle">Binance BTC/USDT • 1H Interval • 24/7 Automated • Paper Trading (No Real Money)</div>
+                        </div>
+                        <div className="header-right">
+                            <div className="status-badge"><span className="status-dot"></span>System Running</div>
+                            {currentPrice && <div className="price-display">{fmt(currentPrice)}</div>}
+                            <button className="refresh-btn" onClick={fetchData}>↻ Refresh</button>
+                        </div>
+                    </div>
+
+                    {/* ===== SUMMARY BAR ===== */}
+                    <div className="grid grid-4" style={{marginBottom:16}}>
+                        <StatBox label="Total Equity" value={fmt(totalEquity)} color={totalPnl >= 0 ? '#22c55e' : '#ef4444'} />
+                        <StatBox label="Total P&L" value={fmt(totalPnl)} color={totalPnl >= 0 ? '#22c55e' : '#ef4444'} />
+                        <StatBox label="Total Trades" value={num(totalTrades)} color="#3b82f6" />
+                        <StatBox label="Overall Win Rate" value={overallWinRate + '%'} color={Number(overallWinRate) >= 50 ? '#22c55e' : '#ef4444'} />
+                    </div>
+
+                    {/* ===== TABS ===== */}
+                    <div className="tab-nav">
+                        <button className={`tab-btn ${activeTab === 'overview' ? 'active' : ''}`} onClick={() => setActiveTab('overview')}>Overview</button>
+                        <button className={`tab-btn ${activeTab === 'trades' ? 'active' : ''}`} onClick={() => setActiveTab('trades')}>All Trades ({tradeHistory.length})</button>
+                        <button className={`tab-btn ${activeTab === 'analytics' ? 'active' : ''}`} onClick={() => setActiveTab('analytics')}>Analytics</button>
+                        <button className={`tab-btn ${activeTab === 'charts' ? 'active' : ''}`} onClick={() => setActiveTab('charts')}>Charts</button>
+                    </div>
+
+                    {/* ===== OVERVIEW TAB ===== */}
+                    {activeTab === 'overview' && (
+                        <div>
+                            {/* Strategy Cards */}
+                            <div className="grid grid-3" style={{marginBottom:16}}>
+                                {Object.keys(STRATEGY_NAMES).map(name => (
+                                    <StrategyCard key={name} name={name} metrics={metrics?.[name]} analytics={analytics?.[name]} enabled={strategyEnabled[name]} onToggle={handleToggle} />
+                                ))}
+                            </div>
+
+                            {/* Active Trades */}
+                            <div className="card" style={{marginBottom:16}}>
+                                <div className="card-header">
+                                    <span className="card-title">Active Trades ({activeTrades.length})</span>
+                                </div>
+                                {activeTrades.length > 0 ? (
+                                    <div className="table-wrap">
+                                        <table>
+                                            <thead><tr>
+                                                <th>Strategy</th><th>Symbol</th><th>Direction</th><th>Entry Price</th>
+                                                <th>Stop Loss</th><th>Take Profit</th><th>Units</th><th>Entry Time</th>
+                                            </tr></thead>
+                                            <tbody>{activeTrades.map((t,i) => <ActiveTradeRow key={i} trade={t} />)}</tbody>
+                                        </table>
+                                    </div>
+                                ) : (
+                                    <div className="empty">No active trades right now. Waiting for signals...</div>
+                                )}
+                            </div>
+
+                            {/* Recent Trades */}
+                            <div className="card">
+                                <div className="card-header">
+                                    <span className="card-title">Recent Trades (Last 20)</span>
+                                    <button className="refresh-btn" onClick={() => setActiveTab('trades')}>View All →</button>
+                                </div>
+                                {tradeHistory.length > 0 ? (
+                                    <div className="table-wrap">
+                                        <table>
+                                            <thead><tr>
+                                                <th>Strategy</th><th>Dir</th><th>Entry</th><th>Exit</th><th>P&L</th>
+                                                <th>Exit Reason</th><th>Fee</th><th>Duration</th><th>Entry Time</th><th>Exit Time</th>
+                                            </tr></thead>
+                                            <tbody>{tradeHistory.slice(0, 20).map(t => <TradeHistoryRow key={t.id} trade={t} />)}</tbody>
+                                        </table>
+                                    </div>
+                                ) : (
+                                    <div className="empty">No trade history yet. The system will log trades here as they occur.</div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* ===== ALL TRADES TAB ===== */}
+                    {activeTab === 'trades' && (
+                        <div className="card">
+                            <div className="card-header">
+                                <span className="card-title">Complete Trade History ({tradeHistory.length} trades)</span>
+                            </div>
+                            {tradeHistory.length > 0 ? (
+                                <div className="table-wrap">
+                                    <table>
+                                        <thead><tr>
+                                            <th>#</th><th>Strategy</th><th>Dir</th><th>Entry</th><th>Exit</th><th>P&L</th>
+                                            <th>Exit Reason</th><th>Fee</th><th>Slippage</th><th>Funding</th>
+                                            <th>Duration</th><th>Entry Time</th><th>Exit Time</th>
+                                        </tr></thead>
+                                        <tbody>
+                                            {tradeHistory.map((t, i) => (
+                                                <tr key={t.id} onClick={() => setExpandedTrade(expandedTrade === t.id ? null : t.id)} style={{cursor:'pointer'}}>
+                                                    <td style={{color:'#64748b'}}>{tradeHistory.length - i}</td>
+                                                    <td><span style={{color: STRATEGY_COLORS[t.strategy], fontWeight:600}}>{STRATEGY_NAMES[t.strategy]?.split(':')[0]}</span></td>
+                                                    <td><span className={`chip ${t.direction === 'long' ? 'chip-long' : 'chip-short'}`}>{t.direction.toUpperCase()}</span></td>
+                                                    <td className="mono">{fmt(t.entry_price)}</td>
+                                                    <td className="mono">{fmt(t.exit_price)}</td>
+                                                    <td className={`mono ${t.pnl >= 0 ? 'pos' : 'neg'}`} style={{fontWeight:700}}>{fmt(t.pnl)}</td>
+                                                    <td>
+                                                        {t.exit_reason === 'tp_hit' && <span className="chip chip-tp">✓ TP</span>}
+                                                        {t.exit_reason === 'sl_hit' && <span className="chip chip-sl">✗ SL</span>}
+                                                        {t.exit_reason === 'timeout' && <span className="chip chip-timeout">⏱ TO</span>}
+                                                    </td>
+                                                    <td className="mono" style={{color:'#64748b'}}>{fmt(t.fee)}</td>
+                                                    <td className="mono" style={{color:'#64748b'}}>{fmt(t.slippage || 0)}</td>
+                                                    <td className="mono" style={{color:'#64748b'}}>{fmt(t.funding_cost || 0)}</td>
+                                                    <td className="mono">{dur(t.entry_time, t.exit_time)}</td>
+                                                    <td>{new Date(t.entry_time).toLocaleString()}</td>
+                                                    <td>{t.exit_time ? new Date(t.exit_time).toLocaleString() : '—'}</td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                </div>
+                            ) : (
+                                <div className="empty">No trades yet.</div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* ===== ANALYTICS TAB ===== */}
+                    {activeTab === 'analytics' && (
+                        <div>
+                            {Object.keys(STRATEGY_NAMES).map(name => {
+                                const a = analytics?.[name] || {};
+                                const m = metrics?.[name] || {};
+                                return (
+                                    <div key={name} className="card" style={{marginBottom:16}}>
+                                        <div className="card-header">
+                                            <span className="card-title" style={{color: STRATEGY_COLORS[name]}}>{STRATEGY_NAMES[name]} — Detailed Analytics</span>
+                                        </div>
+                                        {a.total_trades > 0 ? (
+                                            <div>
+                                                <div className="analytics-grid">
+                                                    <StatBox label="Total Trades" value={a.total_trades} color="#3b82f6" />
+                                                    <StatBox label="Win Rate" value={a.win_rate + '%'} color={a.win_rate >= 50 ? '#22c55e' : '#ef4444'} />
+                                                    <StatBox label="Profit Factor" value={a.profit_factor} color="#22c55e" />
+                                                    <StatBox label="Net P&L" value={fmt(a.net_pnl)} color={a.net_pnl >= 0 ? '#22c55e' : '#ef4444'} />
+                                                    <StatBox label="Avg Win" value={fmt(a.avg_win)} color="#22c55e" />
+                                                    <StatBox label="Avg Loss" value={fmt(a.avg_loss)} color="#ef4444" />
+                                                    <StatBox label="Best Trade" value={fmt(a.best_trade)} color="#22c55e" />
+                                                    <StatBox label="Worst Trade" value={fmt(a.worst_trade)} color="#ef4444" />
+                                                    <StatBox label="Avg Hold Time" value={(a.avg_hold_bars || 0) + 'h'} color="#06b6d4" />
+                                                    <StatBox label="Max Consec. Losses" value={a.max_consecutive_losses} color="#f59e0b" />
+                                                    <StatBox label="Long Trades" value={a.long_trades || 0} color="#3b82f6" />
+                                                    <StatBox label="Short Trades" value={a.short_trades || 0} color="#a855f7" />
+                                                </div>
+                                                <div style={{marginTop:16, display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:12}}>
+                                                    <div style={{background:'var(--bg-secondary)', borderRadius:8, padding:12}}>
+                                                        <div style={{fontSize:10, color:'#64748b', textTransform:'uppercase', marginBottom:8}}>Exit Breakdown</div>
+                                                        <div style={{fontSize:12, marginBottom:4}}>
+                                                            <span className="chip chip-tp">TP: {a.tp_hits || 0}</span>
+                                                        </div>
+                                                        <div style={{fontSize:12, marginBottom:4}}>
+                                                            <span className="chip chip-sl">SL: {a.sl_hits || 0}</span>
+                                                        </div>
+                                                        <div style={{fontSize:12}}>
+                                                            <span className="chip chip-timeout">Timeout: {a.timeouts || 0}</span>
+                                                        </div>
+                                                    </div>
+                                                    <div style={{background:'var(--bg-secondary)', borderRadius:8, padding:12}}>
+                                                        <div style={{fontSize:10, color:'#64748b', textTransform:'uppercase', marginBottom:8}}>Cost Analysis</div>
+                                                        <div className="metric"><span className="label">Fees</span><span className="value">{fmt(a.total_fees)}</span></div>
+                                                        <div className="metric"><span className="label">Slippage</span><span className="value">{fmt(a.total_slippage)}</span></div>
+                                                        <div className="metric"><span className="label">Funding</span><span className="value">{fmt(a.total_funding)}</span></div>
+                                                    </div>
+                                                    <div style={{background:'var(--bg-secondary)', borderRadius:8, padding:12}}>
+                                                        <div style={{fontSize:10, color:'#64748b', textTransform:'uppercase', marginBottom:8}}>Performance</div>
+                                                        <div className="metric"><span className="label">Return</span><span className={`value ${m.total_return >= 0 ? 'pos' : 'neg'}`}>{pct(m.total_return)}</span></div>
+                                                        <div className="metric"><span className="label">CAGR</span><span className={`value ${m.cagr >= 0 ? 'pos' : 'neg'}`}>{pct(m.cagr)}</span></div>
+                                                        <div className="metric"><span className="label">Sharpe</span><span className="value">{m.sharpe || 0}</span></div>
+                                                        <div className="metric"><span className="label">Max DD</span><span className="value neg">{pct(-m.max_drawdown)}</span></div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ) : (
+                                            <div className="empty">No trades yet for this strategy.</div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {/* ===== CHARTS TAB ===== */}
+                    {activeTab === 'charts' && (
+                        <div>
+                            <div className="card" style={{marginBottom:16}}>
+                                <div className="card-header">
+                                    <span className="card-title">Equity Curve</span>
+                                </div>
+                                <div className="chart-container">
+                                    <canvas ref={equityChartRef}></canvas>
+                                </div>
+                                {Object.keys(equityCurve).length === 0 && <div className="empty">No data yet.</div>}
+                            </div>
+                            <div className="card">
+                                <div className="card-header">
+                                    <span className="card-title">Drawdown Over Time</span>
+                                </div>
+                                <div className="chart-container">
+                                    <canvas ref={ddChartRef}></canvas>
+                                </div>
+                                {Object.keys(drawdownData).length === 0 && <div className="empty">No data yet.</div>}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+</body>
+</html>
+

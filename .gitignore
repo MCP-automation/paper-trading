@@ -29,6 +29,9 @@ archive/
 .env
 .env.*
 
+# Config with real API keys (use config.example.json as template)
+config.json
+
 # IDE
 .vscode/
 .idea/
