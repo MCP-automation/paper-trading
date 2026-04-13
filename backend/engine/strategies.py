@@ -1,46 +1,46 @@
 import pandas as pd
-import logging
-from typing import Optional, Dict, Any, Tuple
+import numpy as np
+from typing import Dict, Any, Optional
 
-logger = logging.getLogger(__name__)
 
 class StrategyBase:
     """Base class for all strategies"""
-
     def __init__(self, name: str, config: Dict[str, Any]):
         self.name = name
         self.config = config
-        self.enabled = config.get('enabled', True)
-        self.capital = config.get('initial_capital', 10000)
-        self.initial_capital = self.capital
+        self.enabled = config.get("enabled", True)
+        self.capital = config.get("initial_capital", 10000.0)
+        self.initial_capital = config.get("initial_capital", 10000.0)
         self.in_trade = False
-        self.entry_price = 0.0
-        self.stop_loss = 0.0
-        self.take_profit = 0.0
-        self.units = 0.0
-        self.entry_idx = -1
-        self.direction = 'long'
-        self.debug_mode = config.get('debug_mode', False)
-        
-    def reset(self):
-        self.capital = self.initial_capital
-        self.in_trade = False
-        self.entry_price = 0.0
-        self.stop_loss = 0.0
-        self.take_profit = 0.0
-        self.units = 0.0
-        self.entry_idx = -1
+
+        # Trade state attributes (set by PaperTradeEngine when a trade is opened)
+        self.direction: Optional[str] = None       # 'long' or 'short'
+        self.entry_price: float = 0.0
+        self.stop_loss: float = 0.0
+        self.take_profit: float = 0.0
+        self.units: float = 0.0
+        self.entry_idx: int = -1
 
     def generate_signal(self, df: pd.DataFrame, current_idx: int) -> Optional[str]:
+        """Return 'long', 'short', or None"""
         raise NotImplementedError
 
     def get_signal_debug(self, df: pd.DataFrame, current_idx: int) -> Optional[Dict]:
-        """Return debug info about signal conditions - override in subclasses"""
-        return None
+        """Return detailed condition states for debugging"""
+        raise NotImplementedError
 
 
 class Strategy1(StrategyBase):
-    """Long-Only Breakout Strategy (from stratgey.txt)"""
+    """
+    Long-Only Breakout Strategy (from stratgey.txt)
+    
+    Conditions for LONG:
+    - EMA50 > EMA200 (bull regime)
+    - ATR/Close > 0.015 (high volatility)
+    - Close > HH20 (breakout)
+    - RSI < 70 (not overbought)
+    - Volume > 1.2 * VolMA20 (high volume)
+    """
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__("strategy1", config)
@@ -51,7 +51,6 @@ class Strategy1(StrategyBase):
 
         row = df.iloc[current_idx]
 
-        # Check if we have valid data
         if pd.isna(row.get('ema50')) or pd.isna(row.get('atr')):
             return None
 
@@ -68,7 +67,7 @@ class Strategy1(StrategyBase):
         not_overbought = row['rsi'] < 70
 
         # High volume: Volume > 1.2 * VolMA20
-        high_volume = row['volume'] > (self.config.get('vol_mult', 1.2) * row['vol_ma20'])
+        high_volume = row['volume'] > (1.2 * row['vol_ma20'])
 
         signal = bull_regime and high_vol and breakout and not_overbought and high_volume
 
@@ -83,35 +82,42 @@ class Strategy1(StrategyBase):
         if pd.isna(row.get('ema50')) or pd.isna(row.get('atr')):
             return {'error': 'Missing indicators (EMA50 or ATR is NaN)'}
 
-        # Check each condition
         bull_regime = row['ema50'] > row['ema200']
         atr_pct = (row['atr'] / row['close']) * 100 if row['close'] > 0 else 0
         high_vol = (row['atr'] / row['close']) > 0.015
         breakout = row['close'] > row['hh20']
         not_overbought = row['rsi'] < 70
-        vol_mult = self.config.get('vol_mult', 1.2)
-        high_volume = row['volume'] > (vol_mult * row['vol_ma20'])
+        high_volume = row['volume'] > (1.2 * row['vol_ma20'])
 
-        all_conditions = {
-            'bull_regime': {'met': bull_regime, 'ema50': row['ema50'], 'ema200': row['ema200'], 'diff': row['ema50'] - row['ema200']},
-            'high_volatility': {'met': high_vol, 'atr_pct': round(atr_pct, 3), 'atr': row['atr'], 'required_pct': 1.5},
-            'breakout': {'met': breakout, 'close': row['close'], 'hh20': row['hh20'], 'diff_pct': round((row['close'] - row['hh20']) / row['hh20'] * 100, 3) if row['hh20'] > 0 else 0},
+        conditions = {
+            'bull_regime': {'met': bull_regime, 'ema50': row['ema50'], 'ema200': row['ema200']},
+            'high_volatility': {'met': high_vol, 'atr_pct': round(atr_pct, 3), 'required_pct': 1.5},
+            'breakout': {'met': breakout, 'close': row['close'], 'hh20': row['hh20']},
             'rsi_ok': {'met': not_overbought, 'rsi': round(row['rsi'], 2), 'max_allowed': 70},
-            'volume_ok': {'met': high_volume, 'volume': row['volume'], 'vol_ma': row['vol_ma20'], 'ratio': round(row['volume'] / row['vol_ma20'], 3) if row['vol_ma20'] > 0 else 0, 'required_mult': vol_mult}
+            'volume_ok': {'met': high_volume, 'volume': row['volume'], 'vol_ma20': row['vol_ma20'], 'ratio': round(row['volume'] / row['vol_ma20'], 3) if row['vol_ma20'] > 0 else 0}
         }
 
-        signal = 'long' if all(v['met'] for v in all_conditions.values()) else None
+        signal = 'long' if all(v['met'] for v in conditions.values()) else None
 
         return {
             'strategy': 'strategy1',
             'signal': signal,
-            'conditions': all_conditions,
+            'conditions': conditions,
             'all_met': signal is not None
         }
 
 
 class Strategy2(StrategyBase):
-    """Long-Only Relaxed Strategy (from stratgey2.txt)"""
+    """
+    Long-Only Relaxed Strategy (from stratgey2.txt)
+    
+    Conditions for LONG:
+    - EMA50 > EMA200 (bull regime)
+    - ATR/Close > 0.008 (relaxed volatility)
+    - Close > HH20 (breakout)
+    - RSI < 70 (not overbought)
+    - Volume > 1.05 * VolMA20 (relaxed volume)
+    """
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__("strategy2", config)
@@ -130,7 +136,7 @@ class Strategy2(StrategyBase):
         vol_condition = (row['atr'] / row['close']) > 0.008
         breakout = row['close'] > row['hh20']
         not_overbought = row['rsi'] < 70
-        volume_ok = row['volume'] > (self.config.get('vol_mult', 1.05) * row['vol_ma20'])
+        volume_ok = row['volume'] > (1.05 * row['vol_ma20'])
 
         signal = bull_regime and vol_condition and breakout and not_overbought and volume_ok
 
@@ -150,29 +156,40 @@ class Strategy2(StrategyBase):
         vol_condition = (row['atr'] / row['close']) > 0.008
         breakout = row['close'] > row['hh20']
         not_overbought = row['rsi'] < 70
-        vol_mult = self.config.get('vol_mult', 1.05)
-        volume_ok = row['volume'] > (vol_mult * row['vol_ma20'])
+        volume_ok = row['volume'] > (1.05 * row['vol_ma20'])
 
-        all_conditions = {
-            'bull_regime': {'met': bull_regime, 'ema50': row['ema50'], 'ema200': row['ema200'], 'diff': row['ema50'] - row['ema200']},
-            'vol_condition': {'met': vol_condition, 'atr_pct': round(atr_pct, 3), 'atr': row['atr'], 'required_pct': 0.8},
-            'breakout': {'met': breakout, 'close': row['close'], 'hh20': row['hh20'], 'diff_pct': round((row['close'] - row['hh20']) / row['hh20'] * 100, 3) if row['hh20'] > 0 else 0},
+        conditions = {
+            'bull_regime': {'met': bull_regime, 'ema50': row['ema50'], 'ema200': row['ema200']},
+            'vol_condition': {'met': vol_condition, 'atr_pct': round(atr_pct, 3), 'required_pct': 0.8},
+            'breakout': {'met': breakout, 'close': row['close'], 'hh20': row['hh20']},
             'rsi_ok': {'met': not_overbought, 'rsi': round(row['rsi'], 2), 'max_allowed': 70},
-            'volume_ok': {'met': volume_ok, 'volume': row['volume'], 'vol_ma': row['vol_ma20'], 'ratio': round(row['volume'] / row['vol_ma20'], 3) if row['vol_ma20'] > 0 else 0, 'required_mult': vol_mult}
+            'volume_ok': {'met': volume_ok, 'volume': row['volume'], 'vol_ma20': row['vol_ma20'], 'ratio': round(row['volume'] / row['vol_ma20'], 3) if row['vol_ma20'] > 0 else 0}
         }
 
-        signal = 'long' if all(v['met'] for v in all_conditions.values()) else None
+        signal = 'long' if all(v['met'] for v in conditions.values()) else None
 
         return {
             'strategy': 'strategy2',
             'signal': signal,
-            'conditions': all_conditions,
+            'conditions': conditions,
             'all_met': signal is not None
         }
 
 
 class Strategy3(StrategyBase):
-    """Long/Short Futures Strategy (from stratgey3.txt)"""
+    """
+    Long/Short Futures Strategy (from stratgey3.txt)
+    
+    Conditions for LONG:
+    - EMA50 > EMA200 (bull regime)
+    - Close > HH20 (breakout)
+    - Volume > VolMA20 (volume confirmation)
+    
+    Conditions for SHORT:
+    - EMA50 < EMA200 (bear regime)
+    - Close < LL20 (breakdown)
+    - Volume > VolMA20 (volume confirmation)
+    """
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__("strategy3", config)
@@ -222,15 +239,14 @@ class Strategy3(StrategyBase):
         breakdown = row['close'] < row['ll20']
         volume_ok = row['volume'] > row['vol_ma20']
 
-        all_conditions = {
-            'bull_regime': {'met': bull_regime, 'ema50': row['ema50'], 'ema200': row['ema200'], 'diff': row['ema50'] - row['ema200']},
-            'bear_regime': {'met': bear_regime, 'ema50': row['ema50'], 'ema200': row['ema200'], 'diff': row['ema50'] - row['ema200']},
-            'breakout': {'met': breakout, 'close': row['close'], 'hh20': row['hh20'], 'diff_pct': round((row['close'] - row['hh20']) / row['hh20'] * 100, 3) if row['hh20'] > 0 else 0},
-            'breakdown': {'met': breakdown, 'close': row['close'], 'll20': row['ll20'], 'diff_pct': round((row['close'] - row['ll20']) / row['ll20'] * 100, 3) if row['ll20'] > 0 else 0},
-            'volume_ok': {'met': volume_ok, 'volume': row['volume'], 'vol_ma': row['vol_ma20'], 'ratio': round(row['volume'] / row['vol_ma20'], 3) if row['vol_ma20'] > 0 else 0}
+        conditions = {
+            'bull_regime': {'met': bull_regime, 'ema50': row['ema50'], 'ema200': row['ema200']},
+            'bear_regime': {'met': bear_regime, 'ema50': row['ema50'], 'ema200': row['ema200']},
+            'breakout': {'met': breakout, 'close': row['close'], 'hh20': row['hh20']},
+            'breakdown': {'met': breakdown, 'close': row['close'], 'll20': row['ll20']},
+            'volume_ok': {'met': volume_ok, 'volume': row['volume'], 'vol_ma20': row['vol_ma20']}
         }
 
-        # Determine signal
         signal = None
         if bull_regime and breakout and volume_ok:
             signal = 'long'
@@ -240,13 +256,27 @@ class Strategy3(StrategyBase):
         return {
             'strategy': 'strategy3',
             'signal': signal,
-            'conditions': all_conditions,
+            'conditions': conditions,
             'all_met': signal is not None
         }
 
 
 class Strategy4(StrategyBase):
-    """EMA Crossover with RSI & Price Action Strategy"""
+    """
+    EMA Crossover with RSI & Price Action Strategy (from stratgey 4.txt)
+    
+    Conditions for LONG:
+    - EMA20 > EMA50 (bullish crossover)
+    - Low < Previous Low (pullback / lower low)
+    - Close > Open (green candle - bullish reversal)
+    - RSI > 50 (bullish momentum)
+    
+    Conditions for SHORT:
+    - EMA20 < EMA50 (bearish crossover)
+    - High > Previous High (pullback / higher high)
+    - Close < Open (red candle - bearish reversal)
+    - RSI < 50 (bearish momentum)
+    """
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__("strategy4", config)
@@ -271,7 +301,7 @@ class Strategy4(StrategyBase):
             return 'long'
 
         # SELL signal
-        elif (
+        if (
             row['ema20'] < row['ema50'] and           # EMA20 below EMA50 (bearish)
             row['high'] > prev_row['high'] and         # Higher high (pullback)
             row['close'] < row['open'] and             # Red candle (bearish reversal)
@@ -303,18 +333,17 @@ class Strategy4(StrategyBase):
         red_candle = row['close'] < row['open']
         rsi_below_50 = row['rsi'] < 50
 
-        all_conditions = {
-            'ema_crossover_bullish': {'met': ema20_above_ema50, 'ema20': row['ema20'], 'ema50': row['ema50'], 'diff': row['ema20'] - row['ema50']},
-            'lower_low': {'met': lower_low, 'current_low': row['low'], 'prev_low': prev_row['low'], 'diff': prev_row['low'] - row['low']},
-            'green_candle': {'met': green_candle, 'close': row['close'], 'open': row['open'], 'candle_size': row['close'] - row['open']},
-            'rsi_bullish': {'met': rsi_above_50, 'rsi': round(row['rsi'], 2), 'threshold': 50},
-            'ema_crossover_bearish': {'met': ema20_below_ema50, 'ema20': row['ema20'], 'ema50': row['ema50'], 'diff': row['ema20'] - row['ema50']},
-            'higher_high': {'met': higher_high, 'current_high': row['high'], 'prev_high': prev_row['high'], 'diff': row['high'] - prev_row['high']},
-            'red_candle': {'met': red_candle, 'close': row['close'], 'open': row['open'], 'candle_size': row['close'] - row['open']},
-            'rsi_bearish': {'met': rsi_below_50, 'rsi': round(row['rsi'], 2), 'threshold': 50}
+        conditions = {
+            'ema_crossover_bullish': {'met': ema20_above_ema50, 'ema20': row['ema20'], 'ema50': row['ema50']},
+            'lower_low': {'met': lower_low, 'current_low': row['low'], 'prev_low': prev_row['low']},
+            'green_candle': {'met': green_candle, 'close': row['close'], 'open': row['open']},
+            'rsi_bullish': {'met': rsi_above_50, 'rsi': round(row['rsi'], 2)},
+            'ema_crossover_bearish': {'met': ema20_below_ema50, 'ema20': row['ema20'], 'ema50': row['ema50']},
+            'higher_high': {'met': higher_high, 'current_high': row['high'], 'prev_high': prev_row['high']},
+            'red_candle': {'met': red_candle, 'close': row['close'], 'open': row['open']},
+            'rsi_bearish': {'met': rsi_below_50, 'rsi': round(row['rsi'], 2)}
         }
 
-        # Determine signal
         signal = None
         if ema20_above_ema50 and lower_low and green_candle and rsi_above_50:
             signal = 'long'
@@ -324,13 +353,29 @@ class Strategy4(StrategyBase):
         return {
             'strategy': 'strategy4',
             'signal': signal,
-            'conditions': all_conditions,
+            'conditions': conditions,
             'all_met': signal is not None
         }
 
 
 class Strategy5(StrategyBase):
-    """EMA 8/21 VWAP Momentum Strategy"""
+    """
+    EMA 8/21 VWAP Momentum Strategy (from stratgey 5.txt)
+    
+    Conditions for LONG:
+    - EMA8 > EMA21 (fast above slow)
+    - Close > VWAP (above value area)
+    - Close > Previous Close (upward momentum)
+    - Close > Open (bullish candle)
+    - (Close - Previous Close) > 0 (positive momentum)
+    
+    Conditions for SHORT:
+    - EMA8 < EMA21 (fast below slow)
+    - Close < VWAP (below value area)
+    - Close < Previous Close (downward momentum)
+    - Close < Open (bearish candle)
+    - (Close - Previous Close) < 0 (negative momentum)
+    """
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__("strategy5", config)
@@ -340,6 +385,7 @@ class Strategy5(StrategyBase):
             return None
 
         row = df.iloc[current_idx]
+        prev_close = df['close'].iloc[current_idx - 1]
 
         if pd.isna(row.get('ema8')) or pd.isna(row.get('ema21')) or pd.isna(row.get('vwap')):
             return None
@@ -347,17 +393,17 @@ class Strategy5(StrategyBase):
         long = (
             row['ema8'] > row['ema21'] and
             row['close'] > row['vwap'] and
-            row['close'] > df['close'].iloc[current_idx - 1] and
+            row['close'] > prev_close and
             row['close'] > row['open'] and
-            (row['close'] - df['close'].iloc[current_idx - 1]) > 0
+            (row['close'] - prev_close) > 0
         )
 
         short = (
             row['ema8'] < row['ema21'] and
             row['close'] < row['vwap'] and
-            row['close'] < df['close'].iloc[current_idx - 1] and
+            row['close'] < prev_close and
             row['close'] < row['open'] and
-            (row['close'] - df['close'].iloc[current_idx - 1]) < 0
+            (row['close'] - prev_close) < 0
         )
 
         if long:
@@ -387,10 +433,10 @@ class Strategy5(StrategyBase):
         momentum_down = (row['close'] - prev_row['close']) < 0
 
         conditions = {
-            'ema_fast_vs_slow': {'met': ema_fast_above, 'ema8': row['ema8'], 'ema21': row['ema21']},
-            'price_vs_vwap': {'met': close_above_vwap, 'close': row['close'], 'vwap': row['vwap']},
+            'ema_fast_vs_slow_long': {'met': ema_fast_above, 'ema8': row['ema8'], 'ema21': row['ema21']},
+            'price_vs_vwap_long': {'met': close_above_vwap, 'close': row['close'], 'vwap': row['vwap']},
             'bullish_candle': {'met': bullish_candle, 'close': row['close'], 'open': row['open']},
-            'momentum': {'met': momentum_up, 'close': row['close'], 'prev_close': prev_row['close']},
+            'momentum_up': {'met': momentum_up, 'close': row['close'], 'prev_close': prev_row['close']},
             'ema_fast_vs_slow_short': {'met': ema_fast_below, 'ema8': row['ema8'], 'ema21': row['ema21']},
             'price_vs_vwap_short': {'met': close_below_vwap, 'close': row['close'], 'vwap': row['vwap']},
             'bearish_candle': {'met': bearish_candle, 'close': row['close'], 'open': row['open']},
@@ -405,6 +451,98 @@ class Strategy5(StrategyBase):
 
         return {
             'strategy': 'strategy5',
+            'signal': signal,
+            'conditions': conditions,
+            'all_met': signal is not None
+        }
+
+
+class Strategy6(StrategyBase):
+    """
+    Momentum + Mean Reversion Scalping Strategy (from stratgey6.txt)
+
+    Conditions for LONG:
+    - Momentum: (close - prev_close) / prev_close > 0.001 (0.1% up move)
+      OR mean reversion: candle is red (close < open)
+
+    Conditions for SHORT:
+    - Momentum: (close - prev_close) / prev_close < -0.001 (0.1% down move)
+      OR mean reversion: candle is green (close > open)
+
+    TP = 0.15%, SL = 0.10% (configured via reward_ratio or defaults)
+    """
+
+    def __init__(self, config: Dict[str, Any]):
+        super().__init__("strategy6", config)
+
+    def generate_signal(self, df: pd.DataFrame, current_idx: int) -> Optional[str]:
+        if current_idx < 1:
+            return None
+
+        row = df.iloc[current_idx]
+        prev_row = df.iloc[current_idx - 1]
+
+        if pd.isna(row.get('close')) or pd.isna(prev_row.get('close')):
+            return None
+
+        # Calculate momentum percentage
+        pct_change = (row['close'] - prev_row['close']) / prev_row['close']
+
+        # Momentum signal
+        if pct_change > 0.001:
+            return 'long'
+        elif pct_change < -0.001:
+            return 'short'
+
+        # Mean reversion fallback: counter-trend trade
+        if row['close'] > row['open']:
+            return 'short'
+        elif row['close'] < row['open']:
+            return 'long'
+
+        return None
+
+    def get_signal_debug(self, df: pd.DataFrame, current_idx: int) -> Optional[Dict]:
+        if current_idx < 1:
+            return {'error': 'Not enough data (need at least 2 bars)'}
+
+        row = df.iloc[current_idx]
+        prev_row = df.iloc[current_idx - 1]
+
+        if pd.isna(row.get('close')) or pd.isna(prev_row.get('close')):
+            return {'error': 'Missing close price data'}
+
+        pct_change = (row['close'] - prev_row['close']) / prev_row['close']
+        momentum_up = pct_change > 0.001
+        momentum_down = pct_change < -0.001
+        bullish_candle = row['close'] > row['open']
+        bearish_candle = row['close'] < row['open']
+
+        # Mean reversion signals (opposite of candle color)
+        mr_short = bullish_candle  # green candle → mean reversion short
+        mr_long = bearish_candle   # red candle → mean reversion long
+
+        conditions = {
+            'momentum_up': {'met': momentum_up, 'pct_change': round(pct_change * 100, 3), 'threshold': 0.1},
+            'momentum_down': {'met': momentum_down, 'pct_change': round(pct_change * 100, 3), 'threshold': -0.1},
+            'bullish_candle': {'met': bullish_candle, 'close': row['close'], 'open': row['open']},
+            'bearish_candle': {'met': bearish_candle, 'close': row['close'], 'open': row['open']},
+            'mr_short': {'met': mr_short, 'reason': 'green candle → mean reversion short'},
+            'mr_long': {'met': mr_long, 'reason': 'red candle → mean reversion long'},
+        }
+
+        signal = None
+        if momentum_up:
+            signal = 'long'
+        elif momentum_down:
+            signal = 'short'
+        elif mr_short:
+            signal = 'short'
+        elif mr_long:
+            signal = 'long'
+
+        return {
+            'strategy': 'strategy6',
             'signal': signal,
             'conditions': conditions,
             'all_met': signal is not None

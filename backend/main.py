@@ -1,21 +1,32 @@
+# 🚀 BINANCE PAPER TRADING BACKEND - FINAL STABLE VERSION
+
 import asyncio
 import json
 import os
 import sys
 import logging
-import io
+import traceback
 import pandas as pd
-from datetime import datetime
+from typing import List
+from datetime import datetime, timezone
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# Add backend to path for imports
-sys.path.insert(0, os.path.dirname(__file__))
+# Load environment variables from .env file (must be before config loading)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, fall back to system env vars
 
+# Add backend to path
+sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+# Configure logging to be VERY loud so we see everything
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -23,651 +34,678 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-logger.info(f"Python version: {sys.version}")
+# Load config safely
+try:
+    config_path = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "config.json")
+    )
+    with open(config_path, "r") as f:
+        config = json.load(f)
+    logger.info(f"✅ Config loaded from {config_path}")
+except Exception as e:
+    logger.error(f"❌ Failed to load config: {e}")
+    config = {}
 
 from data.binance import BinanceClient
 from engine.paper_trade import PaperTradeEngine
 from engine.indicators import IndicatorEngine
-from models.database import get_engine, init_db
-from monitoring import monitor, LogLevel, OperationType
+from engine.signal_logger import log_signal
+from engine.trade_executor import log_trade_attempt, log_trade_result, log_strategy_state_change
+from models.database import get_engine, init_db, Trade, EquitySnapshot, StrategyStatus
 
+# ─────────────────────────────────────────────────────────────────────────────
+# STATE
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ─── Capture stdout/stderr for monitoring ────────────────────────────────────
-
-class TerminalCapture(io.StringIO):
-    def __init__(self, stream_name):
-        super().__init__()
-        self.stream_name = stream_name
-
-    def write(self, text):
-        super().write(text)
-        if text.strip():
-            monitor.log_terminal(text.strip(), self.stream_name)
-
-    def flush(self):
-        pass
-
-
-sys.stdout = TerminalCapture("stdout")
-sys.stderr = TerminalCapture("stderr")
-
-# ─── Config ──────────────────────────────────────────────────────────────────
-
-config_path = os.path.join(os.path.dirname(__file__), "..", "config.json")
-config_path = os.path.abspath(config_path)
-try:
-    with open(config_path, "r") as f:
-        config = json.load(f)
-    logger.info(f"Config loaded: {config['binance']['symbol']} ({config['binance']['interval']})")
-except Exception as e:
-    logger.error(f"Config loading failed: {e}")
-    config = {
-        "binance": {"symbol": "BTCUSDT", "interval": "1m", "api_key": "", "api_secret": ""},
-        "system": {"check_interval_seconds": 30, "db_path": "paper_trading.db", "host": "127.0.0.1", "port": 8000},
-        "strategies": {
-            "strategy1": {"enabled": True, "name": "Long-Only Breakout", "initial_capital": 10000, "risk_pct": 0.005, "ema_fast": 20, "ema_slow": 50, "atr_period": 14, "atr_sl_mult": 2.0, "atr_tp_mult": 2.0, "rsi_period": 14, "rsi_max": 75, "breakout_period": 10, "vol_mult": 1.1, "max_hold_hours": 2},
-            "strategy2": {"enabled": True, "name": "Long-Only Relaxed", "initial_capital": 10000, "risk_pct": 0.008, "ema_fast": 25, "ema_slow": 60, "atr_period": 14, "atr_sl_mult": 1.8, "atr_tp_mult": 2.5, "rsi_period": 14, "rsi_max": 72, "breakout_period": 15, "vol_mult": 1.08, "fee": 0.0004},
-            "strategy3": {"enabled": True, "name": "Long/Short Futures", "initial_capital": 10000, "risk_pct": 0.006, "reward_ratio": 2, "ema_fast": 15, "ema_slow": 35, "atr_period": 10, "atr_sl_mult": 2.5, "atr_tp_mult": 2.0, "rsi_period": 14, "breakout_period": 12, "fee": 0.0004, "slippage": 0.0005, "funding_rate": 0.0001},
-            "strategy4": {"enabled": True, "name": "EMA Crossover RSI & Price Action", "initial_capital": 10000, "risk_pct": 0.015, "ema_fast": 8, "ema_slow": 21, "ema_short": 8, "ema_long": 21, "rsi_period": 9, "reward_ratio": 1.5, "fee": 0.0004},
-            "strategy5": {"enabled": True, "name": "EMA 8/21 VWAP Momentum", "initial_capital": 10000, "risk_pct": 0.012, "ema_fast": 5, "ema_slow": 13, "rsi_period": 9, "vwap_period": 15, "momentum_period": 3, "reward_ratio": 1.8, "fee": 0.0004}
-        }
-    }
-
-# ─── Globals ─────────────────────────────────────────────────────────────────
-
-binance_client: BinanceClient = None
-paper_engine: PaperTradeEngine = None
-scheduler: AsyncIOScheduler = None
+binance_client = None
+paper_engine = None
+scheduler = None
 db_session = None
 system_running = False
-cycle_count = 0
-
-# ─── SSE broadcast system ─────────────────────────────────────────────────────
-
-_sse_clients: list[asyncio.Queue] = []
+_ws_clients = []
 
 
-def _broadcast(event_type: str, data: dict):
-    """Push an SSE event to all connected clients."""
-    if not _sse_clients:
-        return
-    payload = {
-        "type": event_type,
-        "data": data,
-        "ts": datetime.utcnow().isoformat(),
+def get_internal_summary():
+    status = {
+        "running": system_running,
+        "symbol": config.get("binance", {}).get("symbol", "BTCUSDT"),
+        "warmup_complete": binance_client.is_warmed_up if binance_client else False,
+        "live_price": binance_client.latest_ticker.get("price")
+        if binance_client and binance_client.latest_ticker
+        else None,
+        "strategies": {},
     }
-    for queue in _sse_clients:
+    if paper_engine:
+        for name, strat in paper_engine.strategies.items():
+            status["strategies"][name] = {"enabled": strat.enabled}
+
+    metrics = {}
+    active_list = []
+    if paper_engine:
+        for name, strat in paper_engine.strategies.items():
+            # Get trade count for this strategy (closed only)
+            trade_count = 0
+            win_rate = 0
+            closed_trades = []
+            if db_session:
+                closed_trades = (
+                    db_session.query(Trade)
+                    .filter_by(strategy_name=name, status="closed")
+                    .all()
+                )
+                trade_count = len(closed_trades)
+                if trade_count > 0:
+                    wins = sum(1 for t in closed_trades if t.pnl and t.pnl > 0)
+                    win_rate = round(wins / trade_count * 100, 2)
+
+                # Get open trades for this strategy
+                open_trades = (
+                    db_session.query(Trade)
+                    .filter_by(strategy_name=name, status="open")
+                    .all()
+                )
+                for t in open_trades:
+                    live_pnl = 0
+                    current_price = status.get("live_price")
+                    if current_price and t.entry_price and t.units:
+                        if t.direction == "long":
+                            live_pnl = (current_price - t.entry_price) * t.units
+                        elif t.direction == "short":
+                            live_pnl = (t.entry_price - current_price) * t.units
+
+                    active_list.append(
+                        {
+                            "strategy": name,
+                            "direction": t.direction,
+                            "entry_price": t.entry_price,
+                            "stop_loss": t.stop_loss,
+                            "take_profit": t.take_profit,
+                            "current_pnl": round(live_pnl, 2),
+                        }
+                    )
+
+            logger.info(
+                f"📊 [{name}] capital={strat.capital}, initial={getattr(strat, 'initial_capital', 10000)}"
+            )
+
+            # Calculate current capital from closed trades + initial capital
+            current_capital = getattr(strat, "initial_capital", 10000)
+            if db_session:
+                for t in closed_trades:
+                    if t.pnl:
+                        current_capital += t.pnl
+
+            return_pct = 0
+            if getattr(strat, "initial_capital", 10000) > 0:
+                return_pct = round(
+                    (current_capital - getattr(strat, "initial_capital", 10000))
+                    / getattr(strat, "initial_capital", 10000)
+                    * 100,
+                    2,
+                )
+
+            metrics[name] = {
+                "name": config.get("strategies", {}).get(name, {}).get("name", name),
+                "current_equity": round(current_capital, 2),
+                "return_pct": return_pct,
+                "trade_count": trade_count,
+                "win_rate": win_rate,
+                "enabled": strat.enabled,
+            }
+    return {"status": status, "active_trades": active_list, "metrics_summary": metrics}
+
+
+async def broadcast(data: dict):
+    """Push data to all connected WebSocket clients"""
+    if not _ws_clients:
+        return
+
+    disconnected = []
+    for client in _ws_clients:
         try:
-            asyncio.create_task(queue.put(payload))
-        except RuntimeError:
-            # Not in async context (shouldn't happen in normal use)
-            pass
+            # Check if connection is still open before sending
+            if client.client_state.value == 1:  # CONNECTED
+                await client.send_json(data)
+            else:
+                disconnected.append(client)
+        except Exception:
+            disconnected.append(client)
+
+    for client in disconnected:
+        if client in _ws_clients:
+            _ws_clients.remove(client)
 
 
-# ─── Lifespan ────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# BROADCAST LOGIC
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+async def broadcast_summary():
+    """Scheduled task to push summary data"""
+    try:
+        data = get_internal_summary()
+        await broadcast({"type": "summary", "data": data})
+    except Exception as e:
+        logger.error(f"Summary broadcast failed: {e}")
+
+
+async def broadcast_price(price: float):
+    """Push price update"""
+    logger.info(f"📡 Broadcasting price: {price}")
+    await broadcast({"type": "price", "price": price})
+
+
+async def broadcast_warmup(completed: int, total: int):
+    """Push warmup progress"""
+    await broadcast({"type": "warmup", "completed": completed, "total": total})
+
+
+async def heartbeat():
+    """Send heartbeat to keep connection alive"""
+    while True:
+        await asyncio.sleep(10)
+        await broadcast({"type": "heartbeat", "timestamp": datetime.now().isoformat()})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# LIFESPAN
+# ─────────────────────────────────────────────────────────────────────────────
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global binance_client, paper_engine, scheduler, db_session, system_running
+    logger.info("⚡ LIFESPAN STARTING")
 
-    try:
-        logger.info("Starting paper trading system (live mode)...")
-        monitor.log(LogLevel.INFO, OperationType.SYSTEM, "Paper trading system starting in LIVE mode")
+    engine = get_engine(config["system"]["db_path"])
+    db_session = init_db(engine)
+    paper_engine = PaperTradeEngine(config, db_session)
+    # Get API keys from .env (preferred) or config.json (fallback)
+    api_key = os.environ.get("BINANCE_API_KEY") or config["binance"].get("api_key")
+    api_secret = os.environ.get("BINANCE_API_SECRET") or config["binance"].get("api_secret")
 
-        # Initialize database
+    binance_client = BinanceClient(
+        symbol=config["binance"]["symbol"],
+        interval=config["binance"]["interval"],
+        api_key=api_key,
+        api_secret=api_secret,
+        warmup_candles=config["binance"].get("warmup_candles", 500),
+    )
+
+    # ─── Step 1: Fetch historical candles via REST ──────────────────────────
+    await binance_client.fetch_historical_candles()
+
+    # ─── Step 2: Start WebSocket for live data ─────────────────────────────
+
+    def on_ws_price_sync(price: float):
+        """Handle price update from WebSocket (sync wrapper)."""
+        if paper_engine:
+            try:
+                paper_engine.update_live_price(price)
+                # Broadcast price to frontend via async task
+                asyncio.get_event_loop().create_task(broadcast_price(price))
+            except Exception as e:
+                logger.error(f"❌ Price update error: {e}")
+
+    def on_ws_kline_sync(candle: dict):
+        """Handle new closed candle from WebSocket (sync wrapper)."""
+        logger.debug(f"📊 New kline: close={candle['close']}")
+
+    binance_client.on_price(on_ws_price_sync)
+    binance_client.on_kline(on_ws_kline_sync)
+
+    ws_task = asyncio.create_task(binance_client.start_websocket())
+
+    # ─── Step 3: Scheduler for signals + broadcasts ────────────────────────
+    # Per-strategy locks to prevent double-firing
+    _signal_locks = {name: False for name in paper_engine.strategies}
+
+    async def check_signals():
+        """Check all strategies for signals every 5 seconds."""
         try:
-            engine = get_engine(config["system"]["db_path"])
-            db_session = init_db(engine)
-            logger.info("Database initialized")
-            monitor.log(LogLevel.SUCCESS, OperationType.SYSTEM, "Database initialized")
-        except Exception as e:
-            logger.error(f"Database error: {e}")
-            from sqlalchemy import create_engine as mem_engine
-            engine = mem_engine("sqlite:///:memory:")
-            db_session = init_db(engine)
-            logger.info("Using in-memory database fallback")
-
-        # Initialize paper trading engine
-        try:
-            config_copy = json.loads(json.dumps(config))
-            paper_engine = PaperTradeEngine(config_copy, db_session)
-            logger.info(f"Paper trading engine initialized with {len(paper_engine.strategies)} strategies")
-            monitor.log(LogLevel.SUCCESS, OperationType.SYSTEM, f"Paper trading engine initialized")
-        except Exception as e:
-            logger.error(f"Paper trading engine error: {e}")
-            monitor.log_error("Paper trading engine initialization failed", exception=e)
-            paper_engine = None
-
-        # Initialize Binance client
-        try:
-            binance_client = BinanceClient(
-                symbol=config["binance"]["symbol"],
-                interval=config["binance"]["interval"],
-                api_key=config["binance"].get("api_key"),
-                api_secret=config["binance"].get("api_secret"),
-                warmup_candles=config["binance"].get("warmup_candles", 200),
-            )
-            # Wire up SSE broadcast
-            binance_client.sse_broadcast = _broadcast
-            logger.info("Binance client created (live mode)")
-            monitor.log(LogLevel.SUCCESS, OperationType.SYSTEM, f"Binance client initialized")
-        except Exception as e:
-            logger.error(f"Binance client error: {e}")
-            monitor.log_error("Binance client initialization failed", exception=e)
-            binance_client = None
-
-        # ── Callbacks ──────────────────────────────────────────────────────
-
-        def on_closed_kline(kline_data: dict):
-            """Called when a 1m candle closes — run strategy logic."""
-            if not kline_data.get("is_closed"):
+            if not paper_engine or not binance_client:
                 return
-            if not binance_client or not binance_client.is_warmed_up:
+            if not binance_client.klines_cache:
                 return
-            if paper_engine:
-                try:
-                    df = binance_client.get_cache_df()
-                    if len(df) >= 200:
-                        paper_engine.process_new_bar(df)
-                        # Broadcast closed candle update
-                        if paper_engine.last_live_price:
-                            _broadcast("live_price", {
-                                "price": paper_engine.last_live_price,
-                                "source": "kline_closed",
-                            })
-                except Exception as e:
-                    monitor.log_error("Closed candle processing failed", exception=e)
 
-        def on_ticker_update(ticker: dict):
-            """Called every ~1s with live ticker data — run SL/TP checks."""
-            if not ticker:
+            df = binance_client.get_cache_df()
+            if df is None or len(df) < 200:
                 return
-            if paper_engine:
+
+            price = binance_client.get_live_price()
+            if not price:
+                return
+
+            for strat_name, strat in paper_engine.strategies.items():
+                already_in_trade = strat.in_trade or (strat_name in paper_engine.active_trades) or _signal_locks.get(strat_name, False)
+                if already_in_trade:
+                    logger.debug(f"⏭️ [{strat_name}] Skipping — already in trade")
+                    continue
+                if not strat.enabled:
+                    continue
+
+                # Set lock immediately to prevent double-fire
+                _signal_locks[strat_name] = True
                 try:
-                    price = ticker.get("price", 0)
-                    if price > 0:
-                        exited = paper_engine.update_live_price(price)
-                        # Broadcast live price always
-                        _broadcast("live_price", {
-                            "price": price,
-                            "change_24h": ticker.get("price_change_pct", 0),
-                            "high_24h": ticker.get("high_24h", 0),
-                            "low_24h": ticker.get("low_24h", 0),
-                            "volume": ticker.get("volume", 0),
-                            "quote_volume": ticker.get("quote_volume", 0),
-                            "bid": ticker.get("bid_price", 0),
-                            "ask": ticker.get("ask_price", 0),
-                            "source": "ticker",
-                        })
-                        # Broadcast trade updates if any exited
-                        if exited:
-                            _broadcast("trade_update", {"action": "live_exit"})
+                    strat_config = config["strategies"][strat_name]
+                    df_ind = IndicatorEngine.compute_all_indicators(df.copy(), strat_config)
+                    if len(df_ind) < 200:
+                        _signal_locks[strat_name] = False
+                        continue
+
+                    current_idx = len(df_ind) - 1
+                    signal = strat.generate_signal(df_ind, current_idx)
+
+                    if signal:
+                        try:
+                            debug_info = strat.get_signal_debug(df_ind, current_idx)
+                            conditions = debug_info.get('conditions', {}) if debug_info else None
+                        except:
+                            conditions = None
+
+                        log_signal(
+                            strategy_name=strat_name,
+                            signal=signal,
+                            price=price,
+                            timestamp=datetime.now(timezone.utc),
+                            conditions=conditions,
+                            symbol=config["binance"]["symbol"]
+                        )
+
+                        log_trade_attempt(
+                            strategy_name=strat_name,
+                            signal=signal,
+                            entry_price=price,
+                            stop_loss=0,
+                            take_profit=0,
+                            units=0,
+                            capital=strat.capital,
+                            risk_pct=strat_config.get("risk_pct", 0.01),
+                            symbol=config["binance"]["symbol"],
+                            trade_type="live",
+                            extra_details={
+                                "Bar Index": current_idx,
+                                "Data Length": len(df_ind),
+                                "Strategy Enabled": strat.enabled,
+                                "Strategy in_trade": strat.in_trade,
+                            }
+                        )
+
+                        paper_engine._open_live_trade(
+                            strat_name,
+                            signal,
+                            price,
+                            strat_config,
+                        )
+
+                        active_trade = paper_engine.active_trades.get(strat_name)
+                        trade_id = active_trade.id if active_trade else "unknown"
+                        logger.info(f"✅ [{strat_name}] Live trade CONFIRMED: trade_id={trade_id}, signal={signal.upper()}, price=${price:,.2f}")
+
+                        log_trade_result(
+                            strategy_name=strat_name,
+                            success=True,
+                            message=f"Live trade opened: {signal.upper()} @ ${price:,.2f}"
+                        )
+
                 except Exception as e:
-                    monitor.log_error("Ticker processing failed", exception=e)
+                    _signal_locks[strat_name] = False
+                    logger.error(f"❌ Signal check error for {strat_name}: {e}")
+                    logger.error(traceback.format_exc())
+                    log_trade_result(
+                        strategy_name=strat_name,
+                        success=False,
+                        error=e,
+                        message=f"Signal check failed: {str(e)}",
+                        stack_trace=traceback.format_exc()
+                    )
+                else:
+                    # Lock will be released by the trade guard next cycle,
+                    # but if no trade was opened, release now
+                    if strat_name not in paper_engine.active_trades:
+                        _signal_locks[strat_name] = False
 
-        # Register callbacks
-        if binance_client:
-            binance_client.on_kline_closed(on_closed_kline)
-            binance_client.on_ticker(on_ticker_update)
-
-        # Init session and start streams
-        if binance_client:
-            await binance_client.init_session()
-
-            async def safe_streams():
-                try:
-                    await binance_client.start_live_streams()
-                except Exception as e:
-                    logger.error(f"Stream loop crashed: {e}")
-                    monitor.log_error("Stream loop crashed", exception=e)
-
-            asyncio.create_task(safe_streams())
-            logger.info("Live streams task started (warmup + dual stream)")
-            monitor.log(LogLevel.INFO, OperationType.SYSTEM, "Live streams connecting...")
-        else:
-            logger.error("Binance client not available, streams not started")
-
-        # ── Scheduler: SL/TP check every 2s (belt-and-suspenders) ─────────
-        try:
-            scheduler = AsyncIOScheduler()
-
-            async def sl_tp_check_job():
-                """Fallback SL/TP check — ticker callback handles most."""
-                if not binance_client or not paper_engine:
-                    return
-                price = binance_client.get_live_price()
-                if price and price > 0:
-                    try:
-                        paper_engine.update_live_price(price)
-                    except Exception as e:
-                        monitor.log_error("SL/TP check failed", exception=e)
-
-            scheduler.add_job(
-                sl_tp_check_job,
-                "interval",
-                seconds=config["system"].get("sl_tp_check_interval", 2),
-                max_instances=1,
-            )
-            scheduler.start()
-            logger.info("Scheduler started")
         except Exception as e:
-            logger.error(f"Scheduler error: {e}")
+            logger.error(f"❌ Signal check loop error: {e}")
 
-        system_running = True
-        logger.info("========================================")
-        logger.info("System started in LIVE mode!")
-        logger.info("========================================")
-        monitor.log(LogLevel.SUCCESS, OperationType.SYSTEM, "System fully operational in LIVE mode")
+    # ─── Scheduler Setup ───────────────────────────────────────────────────
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(check_signals, "interval", seconds=5)
+    scheduler.add_job(broadcast_summary, "interval", seconds=30)
+    scheduler.add_job(heartbeat, "interval", seconds=60)
+    scheduler.start()
 
-    except Exception as e:
-        logger.error(f"Startup error: {e}")
-        import traceback
-        traceback.print_exc()
-
+    system_running = True
+    logger.info(f"🎯 SYSTEM ONLINE — WebSocket data + REST trades (signals=5s)")
     yield
-
-    # Shutdown
-    logger.info("Shutting down...")
     system_running = False
     if scheduler:
-        try:
-            scheduler.shutdown()
-        except Exception:
-            pass
-    if binance_client:
-        try:
-            await binance_client.stop()
-        except Exception:
-            pass
-    logger.info("Shutdown complete")
+        scheduler.shutdown()
+    await binance_client.stop()
+    ws_task.cancel()
+    logger.info("🛑 SYSTEM OFFLINE")
 
 
-# ─── FastAPI App ─────────────────────────────────────────────────────────────
-
-app = FastAPI(title="Binance Paper Trading — Live", lifespan=lifespan)
-
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
 
 FRONTEND_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
 
 
 @app.get("/")
-async def serve_frontend():
+async def index():
     return FileResponse(os.path.join(FRONTEND_DIR, "index.html"))
 
 
-@app.get("/monitor")
-async def serve_monitor():
-    return FileResponse(os.path.join(FRONTEND_DIR, "monitor.html"))
+@app.get("/api/summary")
+async def summary():
+    data = get_internal_summary()
+    # Add extended stats
+    try:
+        if db_session:
+            total_trades = db_session.query(Trade).filter_by(status="closed").count()
+            wins = (
+                db_session.query(Trade)
+                .filter(Trade.status == "closed", Trade.pnl > 0)
+                .count()
+            )
+            win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
 
+            # Calculate total P&L
+            total_pnl = 0
+            for t in db_session.query(Trade).filter_by(status="closed").all():
+                total_pnl += t.pnl or 0
 
-@app.get("/terminal")
-async def serve_terminal():
-    return FileResponse(os.path.join(FRONTEND_DIR, "terminal.html"))
+            # Find best strategy
+            best = None
+            best_pnl = -float("inf")
+            if paper_engine:
+                for name, strat in paper_engine.strategies.items():
+                    pnl = strat.capital - getattr(strat, "initial_capital", 10000)
+                    if pnl > best_pnl:
+                        best_pnl = pnl
+                        best = name
 
-
-# ─── SSE Stream ─────────────────────────────────────────────────────────────
-
-@app.get("/api/stream")
-async def sse_stream(request: Request):
-    """
-    Server-Sent Events endpoint.
-    Clients connect via EventSource('/api/stream') and receive live updates
-    with no polling.
-    """
-    async def event_generator():
-        queue: asyncio.Queue = asyncio.Queue()
-        _sse_clients.append(queue)
-        logger.info(f"SSE client connected (total: {len(_sse_clients)})")
-        try:
-            while True:
-                if await request.is_disconnected():
-                    break
-                try:
-                    data = await asyncio.wait_for(queue.get(), timeout=30)
-                    yield f"data: {json.dumps(data)}\n\n"
-                except asyncio.TimeoutError:
-                    # Send keepalive comment every 30s
-                    yield f": keepalive\n\n"
-        finally:
-            _sse_clients.remove(queue)
-            logger.info(f"SSE client disconnected (total: {len(_sse_clients)})")
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
-
-
-# ─── API Endpoints ──────────────────────────────────────────────────────────
-
-@app.get("/api/status")
-async def get_status():
-    """Get system status with live data."""
-    status = {
-        "running": system_running,
-        "symbol": config["binance"]["symbol"],
-        "interval": "1m",
-        "warmup_complete": binance_client.is_warmed_up if binance_client else False,
-        "warmup_candles": len(binance_client.warmup_cache) if binance_client else 0,
-        "sse_clients": len(_sse_clients),
-    }
-    if binance_client:
-        ticker = binance_client.latest_ticker
-        if ticker:
-            status["live_price"] = ticker.get("price")
-            status["change_24h"] = ticker.get("price_change_pct")
-            status["high_24h"] = ticker.get("high_24h")
-            status["low_24h"] = ticker.get("low_24h")
-            status["volume"] = ticker.get("volume")
-            status["quote_volume"] = ticker.get("quote_volume")
-        else:
-            status["live_price"] = None
-    if paper_engine:
-        status["strategies"] = {}
-        for name, strat in paper_engine.strategies.items():
-            status["strategies"][name] = {
-                "enabled": strat.enabled,
-                "capital": round(strat.capital, 2),
-                "in_trade": strat.in_trade,
+            data["total_stats"] = {
+                "total_trades": total_trades,
+                "total_pnl": round(total_pnl, 2),
+                "win_rate": round(win_rate, 2),
+                "best_strategy": best,
+                "active_positions": len(data.get("active_trades", [])),
             }
-    return status
-
-
-@app.get("/api/current-price")
-async def get_current_price():
-    """Get current live price (from ticker stream, no HTTP call)."""
-    if not binance_client:
-        return {"price": None, "source": "none"}
-    ticker = binance_client.latest_ticker
-    if ticker:
-        return {
-            "price": ticker.get("price"),
-            "change_24h": ticker.get("price_change_pct"),
-            "high_24h": ticker.get("high_24h"),
-            "low_24h": ticker.get("low_24h"),
-            "volume": ticker.get("volume"),
-            "quote_volume": ticker.get("quote_volume"),
-            "bid": ticker.get("bid_price"),
-            "ask": ticker.get("ask_price"),
-            "source": "live_ticker",
-        }
-    candle = binance_client.latest_candle
-    if candle:
-        return {
-            "price": candle.get("close"),
-            "source": "live_candle",
-        }
-    return {"price": None, "source": "none"}
-
-
-@app.get("/api/metrics")
-async def get_metrics():
-    if not paper_engine:
-        return {"error": "Engine not initialized"}
-    try:
-        return paper_engine.get_performance_metrics()
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Stats error: {e}")
+
+    return data
 
 
-@app.get("/api/active-trades")
-async def get_active_trades():
-    if not paper_engine:
-        return []
+@app.get("/api/debug")
+async def debug_strategies():
+    """Live debug: show indicator values and signal conditions for all strategies."""
+    if not paper_engine or not binance_client:
+        return {"error": "Engine not initialized yet"}
+
+    df = binance_client.get_cache_df()
+    if df is None or len(df) < 10:
+        return {"error": f"Not enough candle data yet ({len(df) if df is not None else 0} bars)"}
+
+    result = {
+        "candles_loaded": len(df),
+        "live_price": binance_client.latest_ticker.get("price") if binance_client.latest_ticker else None,
+        "warmup_complete": binance_client.is_warmed_up,
+        "strategies": {}
+    }
+
+    def safe_json(obj):
+        import math
+        if isinstance(obj, dict):
+            return {k: safe_json(v) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [safe_json(v) for v in obj]
+        elif isinstance(obj, float):
+            if math.isnan(obj) or math.isinf(obj):
+                return None
+            return obj
+        # Handle numpy types
+        if type(obj).__module__ == 'numpy':
+            if hasattr(obj, 'item'):
+                val = obj.item()
+                if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+                    return None
+                return val
+        return obj
+
+    for strat_name, strat in paper_engine.strategies.items():
+        try:
+            strat_config = config["strategies"][strat_name]
+            from engine.indicators import IndicatorEngine
+            df_ind = IndicatorEngine.compute_all_indicators(df.copy(), strat_config)
+            current_idx = len(df_ind) - 1
+            debug_info = strat.get_signal_debug(df_ind, current_idx)
+            signal = strat.generate_signal(df_ind, current_idx)
+            raw_strat_data = {
+                "name": strat_config.get("name", strat_name),
+                "enabled": strat.enabled,
+                "in_trade": strat.in_trade,
+                "capital": round(strat.capital, 2),
+                "signal": signal,
+                "debug": debug_info,
+            }
+            result["strategies"][strat_name] = safe_json(raw_strat_data)
+        except Exception as e:
+            result["strategies"][strat_name] = {"error": str(e)}
+
+    return safe_json(result)
+
+
+@app.get("/api/analytics")
+async def analytics():
     try:
-        return paper_engine.get_active_trades()
-    except Exception:
-        return []
+        if not paper_engine or not db_session:
+            return {
+                "total_trades": 0,
+                "win_rate": 0,
+                "profit_factor": 0,
+                "sharpe_ratio": 0,
+            }
+        total_trades = 0
+        wins = 0
+        total_pnl = 0.0
+        for name, strat in paper_engine.strategies.items():
+            trades = (
+                db_session.query(Trade)
+                .filter_by(strategy_name=name, status="closed")
+                .all()
+            )
+            total_trades += len(trades)
+            for t in trades:
+                if t.pnl and t.pnl > 0:
+                    wins += 1
+                total_pnl += t.pnl or 0
+        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+        return {
+            "total_trades": total_trades,
+            "win_rate": round(win_rate, 2),
+            "profit_factor": round(total_pnl / abs(total_pnl), 2)
+            if total_pnl != 0
+            else 0,
+            "sharpe_ratio": 0,
+        }
+    except Exception as e:
+        logger.error(f"Analytics error: {e}")
+        return {"total_trades": 0, "win_rate": 0, "profit_factor": 0, "sharpe_ratio": 0}
 
 
 @app.get("/api/trade-history")
-async def get_trade_history(strategy: str = None, limit: int = 50):
-    if not paper_engine:
-        return []
+@app.get("/api/trades")
+async def trade_history(limit: int = 1000):
     try:
-        return paper_engine.get_trade_history(strategy, limit)
-    except Exception:
+        logger.info(f"Trade history API called with limit={limit}")
+        logger.info(f"db_session is: {db_session}")
+
+        if db_session is None:
+            logger.error("db_session is None!")
+            return []
+
+        # Get ALL trades (open and closed)
+        all_trades = db_session.query(Trade).all()
+        logger.info(f"Total trades in DB: {len(all_trades)}")
+
+        closed_trades = db_session.query(Trade).filter_by(status="closed").all()
+        logger.info(f"Closed trades: {len(closed_trades)}")
+
+        open_trades = db_session.query(Trade).filter_by(status="open").all()
+        logger.info(f"Open trades: {len(open_trades)}")
+
+        # Use a large limit if requesting more than default
+        actual_limit = min(limit, 5000)  # Cap at 5000 to prevent memory issues
+        trades = (
+            db_session.query(Trade).order_by(Trade.entry_time.desc()).limit(actual_limit).all()
+        )
+
+        result = []
+        for t in trades:
+            result.append(
+                {
+                    "id": t.id,
+                    "strategy": t.strategy_name,
+                    "symbol": t.symbol,
+                    "direction": t.direction,
+                    "entry": t.entry_price,
+                    "exit": t.exit_price,
+                    "pnl": t.pnl,
+                    "entry_time": t.entry_time.isoformat() if t.entry_time else None,
+                    "exit_time": t.exit_time.isoformat() if t.exit_time else None,
+                    "exit_reason": t.exit_reason,
+                    "status": t.status,
+                }
+            )
+
+        return result
+    except Exception as e:
+        logger.error(f"Trade history error: {e}")
+        import traceback
+
+        traceback.print_exc()
         return []
 
 
 @app.get("/api/equity-curve")
-async def get_equity_curve(strategy: str = None, limit: int = 500):
-    if not paper_engine:
-        return {}
+async def equity_curve(limit: int = 300):
     try:
-        return paper_engine.get_equity_curve(strategy, limit)
-    except Exception:
-        return {}
-
-
-@app.get("/api/analytics")
-async def get_analytics():
-    if not paper_engine:
-        return {"error": "Engine not initialized"}
-    try:
-        return paper_engine.get_trade_analytics()
+        if not db_session:
+            return {}
+        snapshots = (
+            db_session.query(EquitySnapshot)
+            .order_by(EquitySnapshot.timestamp.desc())
+            .limit(limit)
+            .all()
+        )
+        by_strategy = {}
+        for s in snapshots:
+            if s.strategy_name not in by_strategy:
+                by_strategy[s.strategy_name] = []
+            by_strategy[s.strategy_name].append(
+                {"time": s.timestamp.isoformat(), "equity": s.equity}
+            )
+        return by_strategy
     except Exception as e:
-        return {"error": str(e)}
+        logger.error(f"Equity curve error: {e}")
+        return {}
 
 
 @app.get("/api/drawdown")
-async def get_drawdown():
-    if not paper_engine:
-        return {}
+async def drawdown():
     try:
-        return paper_engine.get_drawdown_series()
-    except Exception:
-        return {}
-
-
-@app.get("/api/signals")
-async def get_signals(limit: int = 50):
-    if not paper_engine:
-        return []
-    try:
-        return paper_engine.get_recent_signals(limit)
-    except Exception:
-        return []
-
-
-@app.get("/api/signals-debug")
-async def get_signals_debug():
-    if not paper_engine or not binance_client:
-        return {"error": "Engine or Binance client not initialized"}
-    try:
-        df = binance_client.get_cache_df()
-        if len(df) < 2:
-            return {"error": "Not enough data", "candles": len(df)}
-        results = {}
-        current_idx = len(df) - 1
-        for strat_name, strategy in paper_engine.strategies.items():
-            if not strategy.enabled:
-                results[strat_name] = {"enabled": False}
-                continue
-            strat_config = config["strategies"][strat_name]
-            df_with_indicators = IndicatorEngine.compute_all_indicators(df.copy(), strat_config)
-            debug_info = strategy.get_signal_debug(df_with_indicators, current_idx)
-            if debug_info:
-                debug_info["enabled"] = True
-                if "conditions" in debug_info:
-                    for cond_name, cond_info in debug_info["conditions"].items():
-                        for key, value in cond_info.items():
-                            if hasattr(value, "item"):
-                                cond_info[key] = value.item()
-                results[strat_name] = debug_info
-        return {
-            "timestamp": datetime.utcnow().isoformat(),
-            "candles": len(df),
-            "current_price": df.iloc[-1]["close"],
-            "is_warmed_up": binance_client.is_warmed_up,
-            "strategies": results,
-        }
+        if not db_session:
+            return {}
+        snapshots = (
+            db_session.query(EquitySnapshot)
+            .order_by(EquitySnapshot.timestamp.desc())
+            .limit(300)
+            .all()
+        )
+        data = {}
+        for s in snapshots:
+            if s.strategy_name not in data:
+                data[s.strategy_name] = []
+            data[s.strategy_name].append(
+                {"time": s.timestamp.isoformat(), "drawdown": 0}
+            )
+        return data
     except Exception as e:
-        import traceback
-        return {"error": str(e), "traceback": traceback.format_exc()}
+        logger.error(f"Drawdown error: {e}")
+        return {}
 
 
-@app.get("/api/klines")
-async def get_klines(limit: int = 200):
-    """Get cached klines (live from stream)."""
-    if binance_client:
-        try:
-            df = binance_client.get_cache_df()
-            recent = df.tail(limit)
-            records = recent.reset_index().to_dict("records")
-            # Include current open candle if available
-            if binance_client.latest_candle and not binance_client.latest_candle.get("is_closed", True):
-                records.append(binance_client.latest_candle)
-            return records
-        except Exception:
-            pass
-    return []
+@app.get("/api/strategies")
+async def get_strategies():
+    """Return strategy list from config — available even before warmup completes."""
+    strategies = {}
+    strat_cfg = config.get("strategies", {})
+    for key, cfg in strat_cfg.items():
+        enabled = cfg.get("enabled", True)
+        # If engine is running, use live enabled state
+        if paper_engine and key in paper_engine.strategies:
+            enabled = paper_engine.strategies[key].enabled
+        strategies[key] = {
+            "name": cfg.get("name", key),
+            "enabled": enabled,
+            "initial_capital": cfg.get("initial_capital", 10000),
+        }
+    return strategies
 
 
-# ─── Strategy Controls ───────────────────────────────────────────────────────
+@app.post("/api/strategies/{name}/toggle")
+async def toggle_strategy(name: str):
+    try:
+        if not paper_engine or name not in paper_engine.strategies:
+            return {"enabled": True, "error": "Strategy not found"}
 
-class StrategyToggle(BaseModel):
-    enabled: bool
+        strat = paper_engine.strategies[name]
+        # Toggle: if enabled, disable it. If disabled, enable it.
+        strat.enabled = not strat.enabled
 
+        logger.info(f"🔄 Toggled {name}: enabled={strat.enabled}")
 
-@app.post("/api/strategies/{strategy_name}/toggle")
-async def toggle_strategy(strategy_name: str, body: StrategyToggle):
-    if not paper_engine:
-        raise HTTPException(status_code=503, detail="Engine not initialized")
-    if strategy_name not in paper_engine.strategies:
-        raise HTTPException(status_code=404, detail=f"Strategy {strategy_name} not found")
-    paper_engine.toggle_strategy(strategy_name, body.enabled)
-    return {"status": "ok", "strategy": strategy_name, "enabled": body.enabled}
+        # Save to database
+        if db_session:
+            status = (
+                db_session.query(StrategyStatus).filter_by(strategy_name=name).first()
+            )
+            if status:
+                status.enabled = strat.enabled
+            else:
+                status = StrategyStatus(strategy_name=name, enabled=strat.enabled)
+                db_session.add(status)
+            db_session.commit()
 
-
-class RiskUpdate(BaseModel):
-    risk_pct: float = None
-    reward_ratio: float = None
-
-
-@app.post("/api/strategies/{strategy_name}/risk")
-async def update_risk_params(strategy_name: str, body: RiskUpdate):
-    if strategy_name not in config["strategies"]:
-        raise HTTPException(status_code=404, detail="Strategy not found")
-    if body.risk_pct is not None:
-        config["strategies"][strategy_name]["risk_pct"] = body.risk_pct
-    if body.reward_ratio is not None:
-        config["strategies"][strategy_name]["reward_ratio"] = body.reward_ratio
-    return {"status": "ok", "config": config["strategies"][strategy_name]}
+        return {"enabled": strat.enabled, "strategy": name}
+    except Exception as e:
+        logger.error(f"Toggle strategy error: {e}")
+        return {"enabled": False, "error": str(e)}
 
 
-# ─── Bloomberg Terminal Endpoints ────────────────────────────────────────────
+@app.websocket("/api/ws/price")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    _ws_clients.append(websocket)
+    logger.info(f"🔌 Client connected. Total: {len(_ws_clients)}")
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        logger.info("🔌 Client disconnected")
+    finally:
+        if websocket in _ws_clients:
+            _ws_clients.remove(websocket)
 
-@app.get("/api/market/orderbook/{symbol}")
-async def get_order_book(symbol: str, limit: int = 20):
-    if binance_client:
-        try:
-            return await binance_client.get_order_book(symbol, limit)
-        except Exception as e:
-            return {"error": str(e), "bids": [], "asks": []}
-    return {"error": "Binance client not initialized", "bids": [], "asks": []}
-
-
-@app.get("/api/market/trades/{symbol}")
-async def get_recent_trades(symbol: str, limit: int = 50):
-    if binance_client:
-        try:
-            return await binance_client.get_recent_trades(symbol, limit)
-        except Exception as e:
-            return {"error": str(e), "trades": []}
-    return {"error": "Binance client not initialized", "trades": []}
-
-
-@app.get("/api/market/ticker/{symbol}")
-async def get_24hr_ticker(symbol: str):
-    if binance_client:
-        try:
-            return await binance_client.get_24hr_ticker(symbol)
-        except Exception as e:
-            return {"error": str(e)}
-    return {"error": "Binance client not initialized"}
-
-
-@app.get("/api/market/top-symbols")
-async def get_top_symbols(limit: int = 20):
-    if binance_client:
-        try:
-            return await binance_client.get_top_symbols(limit)
-        except Exception as e:
-            return {"error": str(e), "symbols": []}
-    return {"error": "Binance client not initialized", "symbols": []}
-
-
-@app.get("/api/market/watchlist")
-async def get_watchlist():
-    if binance_client:
-        try:
-            top_symbols = await binance_client.get_top_symbols(10)
-            watchlist = []
-            for ticker in top_symbols:
-                sym = ticker.get("symbol", "")
-                if sym:
-                    watchlist.append({
-                        "symbol": sym,
-                        "price": float(ticker.get("lastPrice", 0)),
-                        "change": float(ticker.get("priceChangePercent", 0)),
-                        "volume": float(ticker.get("volume", 0)),
-                        "high": float(ticker.get("highPrice", 0)),
-                        "low": float(ticker.get("lowPrice", 0)),
-                    })
-            return {"watchlist": watchlist}
-        except Exception as e:
-            return {"error": str(e), "watchlist": []}
-    return {"error": "Binance client not initialized", "watchlist": []}
-
-
-# ─── Monitoring Endpoints ────────────────────────────────────────────────────
-
-@app.get("/api/monitor/logs")
-async def get_monitor_logs(limit: int = 100, level: str = None, strategy: str = None):
-    logs = monitor.get_logs(limit=limit, level=level, strategy=strategy)
-    return {"logs": logs, "total": len(logs), "timestamp": datetime.utcnow().isoformat()}
-
-
-@app.get("/api/monitor/status")
-async def get_monitor_status():
-    return {"status": monitor.get_current_status(), "timestamp": datetime.utcnow().isoformat()}
-
-
-@app.get("/api/monitor/activity")
-async def get_monitor_activity(strategy: str = None):
-    logs = monitor.get_logs(limit=50, strategy=strategy)
-    activity = {
-        "api_calls": [l for l in logs if l["type"] == "API_CALL"],
-        "data_fetches": [l for l in logs if l["type"] == "DATA_FETCH"],
-        "signal_checks": [l for l in logs if l["type"] == "SIGNAL_CHECK"],
-        "trades": [l for l in logs if l["type"] in ["TRADE_OPEN", "TRADE_CLOSE"]],
-        "errors": [l for l in logs if l["level"] == "ERROR"],
-        "warnings": [l for l in logs if l["level"] == "WARNING"],
-    }
-    return {
-        "activity": activity,
-        "summary": monitor.get_current_status(),
-        "timestamp": datetime.utcnow().isoformat(),
-    }
-
-
-# ─── Run ─────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info(f"Starting uvicorn on {config['system']['host']}:{config['system']['port']}")
-    uvicorn.run(
-        app,
-        host=config["system"]["host"],
-        port=config["system"]["port"],
-        reload=False,
-    )
+
+    # Use 127.0.0.1 instead of 0.0.0.0 for local access
+    uvicorn.run(app, host="127.0.0.1", port=8000)

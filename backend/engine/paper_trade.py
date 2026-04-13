@@ -2,7 +2,9 @@ import json
 import pandas as pd
 import numpy as np
 import time
-from datetime import datetime
+import logging
+import traceback
+from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 from engine.strategies import (
     StrategyBase,
@@ -11,11 +13,21 @@ from engine.strategies import (
     Strategy3,
     Strategy4,
     Strategy5,
+    Strategy6,
 )
 from engine.indicators import IndicatorEngine
+from engine.signal_logger import log_signal, log_signal_check
+from engine.trade_executor import (
+    log_trade_attempt,
+    log_trade_result,
+    log_strategy_state_change,
+    log_database_operation,
+    log_trade_closure,
+)
 from models.database import Trade, EquitySnapshot, Signal, StrategyStatus
 from sqlalchemy.orm import Session
-from monitoring import monitor
+
+logger = logging.getLogger(__name__)
 
 
 class PaperTradeEngine:
@@ -33,6 +45,56 @@ class PaperTradeEngine:
         # Initialize strategies
         self._init_strategies()
 
+        # Load open trades from DB
+        self._load_open_trades()
+
+    def _load_open_trades(self):
+        """Load open trades from DB into active_trades dict"""
+        open_trades = self.db.query(Trade).filter_by(status="open").all()
+
+        if open_trades:
+            logger.info(f"🔄 Resuming {len(open_trades)} open trades from previous run")
+            for trade in open_trades:
+                strat_name = trade.strategy_name
+                strategy = self.strategies.get(strat_name)
+                
+                if strategy:
+                    # Restore strategy state
+                    strategy.in_trade = True
+                    strategy.direction = trade.direction
+                    strategy.entry_price = trade.entry_price
+                    strategy.stop_loss = trade.stop_loss
+                    strategy.take_profit = trade.take_profit
+                    strategy.units = trade.units
+                    
+                    self.active_trades[strat_name] = trade
+                    logger.info(f"✅ Resumed trade #{trade.id} for {strat_name}")
+                else:
+                    # If strategy no longer exists, close it
+                    logger.warning(f"⚠️ Strategy {strat_name} not found, closing orphan trade #{trade.id}")
+                    trade.status = "closed"
+                    trade.exit_reason = "orphan_strategy"
+                    trade.exit_price = trade.entry_price
+                    trade.exit_time = datetime.now(timezone.utc)
+                    trade.pnl = 0
+            
+            self.db.commit()
+
+        # Restore each strategy's capital from its closed trade history
+        for strat_name, strategy in self.strategies.items():
+            closed_trades = (
+                self.db.query(Trade)
+                .filter_by(strategy_name=strat_name, status="closed")
+                .all()
+            )
+            if closed_trades:
+                realized_pnl = sum(t.pnl or 0 for t in closed_trades)
+                strategy.capital = strategy.initial_capital + realized_pnl
+                logger.info(
+                    f"💼 [{strat_name}] Capital restored: ${strategy.capital:.2f} "
+                    f"(initial ${strategy.initial_capital:.2f} + PnL ${realized_pnl:.2f})"
+                )
+
     def _init_strategies(self):
         """Initialize all four strategies from config"""
         strat_cfg = self.config["strategies"]
@@ -42,6 +104,7 @@ class PaperTradeEngine:
         self.strategies["strategy3"] = Strategy3(strat_cfg["strategy3"])
         self.strategies["strategy4"] = Strategy4(strat_cfg["strategy4"])
         self.strategies["strategy5"] = Strategy5(strat_cfg["strategy5"])
+        self.strategies["strategy6"] = Strategy6(strat_cfg["strategy6"])
 
         # Load enabled status from DB
         for name in self.strategies:
@@ -80,10 +143,10 @@ class PaperTradeEngine:
             )
             indicator_duration = time.time() - start
 
-            # Log indicator calculation
-            indicators = ["ema50", "ema200", "atr", "rsi", "hh20", "ll20", "vol_ma20"]
-            monitor.log_indicator_calc(
-                strat_name, indicators, duration=indicator_duration
+            # Indicators computed successfully
+            # (indicator_duration: {:.3f}s)
+            logger.debug(
+                f"[{strat_name}] Indicators computed in {indicator_duration:.3f}s"
             )
 
             # Get the last completed bar index
@@ -97,16 +160,43 @@ class PaperTradeEngine:
             if not self.active_trades.get(strat_name):
                 signal = strategy.generate_signal(df_with_indicators, current_idx)
 
-                # Log signal check
+                # Get the current bar's timestamp and price for logging
                 row = df_with_indicators.iloc[current_idx]
-                conditions = {
-                    "ema_alignment": row["ema50"] > row["ema200"],
-                    "volatility": row["atr"] / row["close"] > 0.01,
-                    "breakout": row["close"] > row["hh20"],
-                    "rsi": row["rsi"] < 70,
-                    "volume": row["volume"] > row["vol_ma20"],
-                }
-                monitor.log_signal_check(strat_name, conditions, signal=signal)
+                bar_timestamp = row.name if hasattr(row, 'name') else datetime.now(timezone.utc)
+                current_price = row['close']
+                
+                # Log signal with detailed conditions
+                if signal:
+                    # Try to get debug info for conditions
+                    try:
+                        debug_info = strategy.get_signal_debug(df_with_indicators, current_idx)
+                        conditions = debug_info.get('conditions', {}) if debug_info else None
+                    except:
+                        conditions = None
+                    
+                    log_signal(
+                        strategy_name=strat_name,
+                        signal=signal,
+                        price=current_price,
+                        timestamp=bar_timestamp if isinstance(bar_timestamp, datetime) else None,
+                        conditions=conditions,
+                        symbol=self.symbol
+                    )
+                else:
+                    # Optional: log failed signal checks in debug mode
+                    if getattr(strategy, 'debug_mode', False):
+                        try:
+                            debug_info = strategy.get_signal_debug(df_with_indicators, current_idx)
+                            conditions = debug_info.get('conditions', {}) if debug_info else None
+                            log_signal_check(
+                                strategy_name=strat_name,
+                                price=current_price,
+                                timestamp=bar_timestamp if isinstance(bar_timestamp, datetime) else None,
+                                conditions=conditions,
+                                signal=None
+                            )
+                        except:
+                            pass
 
                 if signal:
                     self._open_trade(
@@ -140,11 +230,14 @@ class PaperTradeEngine:
                     exit_reason = "stop_loss"
                 elif live_price >= strategy.take_profit:
                     exit_reason = "take_profit"
-            else:  # short
+            elif strategy.direction == "short":
                 if live_price >= strategy.stop_loss:
                     exit_reason = "stop_loss"
                 elif live_price <= strategy.take_profit:
                     exit_reason = "take_profit"
+            else:
+                logger.warning(f"⚠️ [{strat_name}] update_live_price: invalid direction={strategy.direction}, trade #{trade.id} may be stuck")
+                # If direction is None/invalid, skip — no valid trade state
 
             if exit_reason:
                 self._close_trade(strat_name, exit_price, exit_reason)
@@ -190,42 +283,107 @@ class PaperTradeEngine:
             self._close_trade(strategy_name, exit_price, exit_reason)
 
     def _close_trade(self, strategy_name: str, exit_price: float, exit_reason: str):
-        """Close an active trade"""
-        strategy = self.strategies[strategy_name]
-        trade = self.active_trades[strategy_name]
-        config = self.config["strategies"][strategy_name]
+        """Close an active trade with detailed logging"""
+        try:
+            strategy = self.strategies[strategy_name]
+            trade = self.active_trades[strategy_name]
+            config = self.config["strategies"][strategy_name]
 
-        # Calculate PnL
-        if strategy.direction == "long":
-            pnl = (exit_price - strategy.entry_price) * strategy.units
-        else:
-            pnl = (strategy.entry_price - exit_price) * strategy.units
+            capital_before = strategy.capital
 
-        # Deduct fees
-        fee = abs(exit_price * strategy.units) * config.get("fee", 0.0004)
-        pnl -= fee
+            # Apply exit slippage (strategy3 and any config with slippage)
+            slippage_val = 0.0
+            if config.get("slippage"):
+                slippage_val = config.get("slippage", 0.0003)
+                if strategy.direction == "long":
+                    exit_price *= 1 - slippage_val
+                else:
+                    exit_price *= 1 + slippage_val
 
-        # Update strategy capital
-        strategy.capital += pnl
-        strategy.in_trade = False
+            # Calculate PnL (guard against None direction)
+            if strategy.direction == "long":
+                pnl = (exit_price - strategy.entry_price) * strategy.units
+            elif strategy.direction == "short":
+                pnl = (strategy.entry_price - exit_price) * strategy.units
+            else:
+                logger.warning(f"⚠️ [{strategy_name}] Unknown direction: {strategy.direction}, defaulting to long PnL")
+                pnl = (exit_price - strategy.entry_price) * strategy.units
 
-        # Update trade record
-        trade.exit_price = exit_price
-        trade.exit_time = datetime.utcnow()
-        trade.pnl = pnl
-        trade.exit_reason = exit_reason
-        trade.fee = fee
-        trade.status = "closed"
+            # Deduct fees
+            fee = abs(exit_price * strategy.units) * config.get("fee", 0.0004)
+            pnl -= fee
 
-        self.db.commit()
+            # Funding cost (strategy3 or any config with funding_rate)
+            funding_cost = 0.0
+            if config.get("funding_rate") and trade.entry_time:
+                # Estimate bars held (8h funding periods) from trade duration
+                entry_dt = trade.entry_time
+                # Handle both naive and aware datetimes from SQLite
+                if entry_dt.tzinfo is None:
+                    entry_dt = entry_dt.replace(tzinfo=timezone.utc)
+                hold_seconds = (datetime.now(timezone.utc) - entry_dt).total_seconds()
+                bars_held = hold_seconds / 3600  # approximate hours held
+                funding_cost = (
+                    abs(strategy.entry_price * strategy.units)
+                    * config.get("funding_rate", 0.0001)
+                    * (bars_held / 8)
+                )
+                pnl -= funding_cost
 
-        # Log trade closing
-        monitor.log_trade_close(
-            strategy_name, strategy.direction, exit_price, pnl, exit_reason
-        )
+            # Update strategy capital
+            strategy.capital += pnl
+            capital_after = strategy.capital
 
-        # Remove from active trades
-        del self.active_trades[strategy_name]
+            logger.info(
+                f"💰 [{strategy_name}] Trade closed: pnl=${pnl:.2f}, "
+                f"capital: ${capital_before:.2f} → ${capital_after:.2f}"
+            )
+            strategy.in_trade = False
+
+            # Update trade record
+            trade.exit_price = exit_price
+            trade.exit_time = datetime.now(timezone.utc)
+            trade.pnl = pnl
+            trade.exit_reason = exit_reason
+            trade.fee = fee
+            trade.slippage = slippage_val
+            trade.funding_cost = funding_cost
+            trade.status = "closed"
+
+            logger.info(f"📝 [{strategy_name}] Committing trade closure: trade_id={trade.id}")
+            self.db.commit()
+            log_database_operation("COMMIT", True, f"Trade #{trade.id} closed")
+            logger.info(f"✅ [{strategy_name}] Trade #{trade.id} committed to DB successfully")
+
+            # Log trade closure with detailed P&L
+            log_trade_closure(
+                strategy_name=strategy_name,
+                exit_price=exit_price,
+                exit_reason=exit_reason,
+                pnl=pnl,
+                entry_price=strategy.entry_price,
+                capital_before=capital_before,
+                capital_after=capital_after,
+                symbol=self.symbol,
+            )
+
+            # Remove from active trades
+            del self.active_trades[strategy_name]
+
+            # Log strategy state update
+            log_strategy_state_change(
+                strategy_name,
+                {
+                    'in_trade': (True, False),
+                    'capital': (capital_before, capital_after),
+                }
+            )
+            
+        except Exception as e:
+            logger.error(f"❌ [{strategy_name}] Failed to close trade: {e}")
+            logger.error(traceback.format_exc())
+            self.db.rollback()
+            raise
 
     def _check_live_signal(
         self, strategy_name: str, live_price: float, df: pd.DataFrame
@@ -265,147 +423,266 @@ class PaperTradeEngine:
     def _open_live_trade(
         self, strategy_name: str, signal: str, live_price: float, config: Dict
     ):
-        """Open a new live paper trade"""
+        """Open a new live paper trade with detailed logging"""
         strategy = self.strategies[strategy_name]
 
-        # Use simplified risk management for live trading
-        risk_amt = strategy.capital * config.get("risk_pct", 0.01)
+        try:
+            # Log strategy state before trade
+            logger.info(f"🎯 Opening live trade for {strategy_name}: {signal.upper()}")
+            logger.info(f"   Current state: capital=${strategy.capital:.2f}, in_trade={strategy.in_trade}")
 
-        # Estimate stop distance based on recent volatility (simplified)
-        stop_dist = live_price * 0.02  # 2% stop loss
-        units = risk_amt / stop_dist
+            # Use ATR-based stop loss
+            risk_pct = config.get("risk_pct", 0.01)
+            risk_amt = strategy.capital * risk_pct
 
-        # Apply slippage
-        slippage = config.get("slippage", 0.0003)
-        entry_price = live_price
-        if signal == "long":
-            entry_price *= 1 + slippage
-        else:
-            entry_price *= 1 - slippage
+            # Use ATR from config defaults for stop distance (since we may not have
+            # the latest bar's ATR in live mode — fallback to percentage)
+            # Estimate ATR as ~1.5% of price for BTC (reasonable default)
+            estimated_atr_pct = 0.015
+            stop_dist = live_price * estimated_atr_pct * config.get("atr_sl_mult", 2.0)
+            units = risk_amt / stop_dist
 
-        # Calculate SL/TP
-        if signal == "long":
-            stop_loss = entry_price * (1 - 0.02)  # 2% stop loss
-            take_profit = entry_price * (1 + 0.04)  # 4% take profit
-        else:  # short
-            stop_loss = entry_price * (1 + 0.02)  # 2% stop loss
-            take_profit = entry_price * (1 - 0.04)  # 4% take profit
-
-        # Create trade record
-        trade = Trade(
-            strategy_name=strategy_name,
-            symbol=self.symbol.upper(),
-            direction=signal,
-            entry_price=entry_price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            units=units,
-            entry_time=datetime.utcnow(),
-            status="open",
-        )
-
-        self.db.add(trade)
-        self.db.commit()
-
-        # Update strategy state
-        strategy.in_trade = True
-        strategy.entry_price = entry_price
-        strategy.stop_loss = stop_loss
-        strategy.take_profit = take_profit
-        strategy.units = units
-        strategy.direction = signal
-
-        self.active_trades[strategy_name] = trade
-
-        monitor.log_trade_open(
-            strategy_name, signal, entry_price, stop_loss, take_profit, units
-        )
-
-        # Save strategy status
-        db_status = (
-            self.db.query(StrategyStatus).filter_by(strategy_name=strategy_name).first()
-        )
-        if db_status:
-            db_status.in_trade = True
-        self.db.commit()
-
-    def _open_trade(
-        self, strategy_name: str, signal: str, df: pd.DataFrame, idx: int, config: Dict
-    ):
-        """Open a new paper trade"""
-        strategy = self.strategies[strategy_name]
-        row = df.iloc[idx]
-
-        # Calculate stop distance
-        stop_dist = config.get("atr_sl_mult", 1.5) * row["atr"]
-        if stop_dist <= 0:
-            monitor.log_warning(
-                f"Stop distance is invalid: {stop_dist}", strategy=strategy_name
-            )
-            return
-
-        # Risk amount
-        risk_amt = strategy.capital * config.get("risk_pct", 0.01)
-        units = risk_amt / stop_dist
-
-        # Entry price (with slippage for strategy3)
-        entry_price = row["open"]
-        slippage_cost = 0.0
-
-        if strategy_name == "strategy3":
+            # Apply slippage
             slippage = config.get("slippage", 0.0003)
+            entry_price = live_price
             if signal == "long":
                 entry_price *= 1 + slippage
             else:
                 entry_price *= 1 - slippage
-            slippage_cost = entry_price * units * slippage
 
-        # Calculate SL/TP
-        if signal == "long":
-            stop_loss = entry_price - stop_dist
-            take_profit = (
-                entry_price
-                + config.get("reward_ratio", config.get("atr_tp_mult", 3.0)) * stop_dist
+            # Calculate SL/TP using ATR-based distances
+            if signal == "long":
+                stop_loss = entry_price - stop_dist
+                tp_mult = config.get("atr_tp_mult", config.get("reward_ratio", 2.0))
+                take_profit = entry_price + tp_mult * stop_dist
+            else:  # short
+                stop_loss = entry_price + stop_dist
+                tp_mult = config.get("atr_tp_mult", config.get("reward_ratio", 2.0))
+                take_profit = entry_price - tp_mult * stop_dist
+
+            # Log trade attempt
+            log_trade_attempt(
+                strategy_name=strategy_name,
+                signal=signal,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                units=units,
+                capital=strategy.capital,
+                risk_pct=risk_pct,
+                symbol=self.symbol,
+                trade_type="live",
+                extra_details={
+                    "Slippage": slippage,
+                    "Stop Distance": f"${stop_dist:.2f}",
+                }
             )
-        else:  # short
-            stop_loss = entry_price + stop_dist
-            take_profit = (
-                entry_price
-                - config.get("reward_ratio", config.get("atr_tp_mult", 3.0)) * stop_dist
+
+            # Create trade record
+            trade = Trade(
+                strategy_name=strategy_name,
+                symbol=self.symbol.upper(),
+                direction=signal,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                units=units,
+                entry_time=datetime.now(timezone.utc),
+                status="open",
             )
 
-        # Create trade record
-        trade = Trade(
-            strategy_name=strategy_name,
-            symbol=self.symbol.upper(),
-            direction=signal,
-            entry_price=entry_price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            units=units,
-            entry_time=datetime.utcnow(),
-            status="open",
-        )
+            self.db.add(trade)
+            self.db.commit()
+            self.db.refresh(trade)
+            
+            log_database_operation("COMMIT", True, f"Trade #{trade.id} created")
+            log_trade_result(
+                strategy_name=strategy_name,
+                success=True,
+                trade_id=trade.id,
+                message=f"Live trade opened: {signal.upper()} @ ${entry_price:,.2f}"
+            )
 
-        self.db.add(trade)
-        self.db.commit()
-        self.db.refresh(trade)
+            # Update strategy state
+            old_state = {
+                'in_trade': (strategy.in_trade, True),
+                'entry_price': (strategy.entry_price, entry_price),
+                'stop_loss': (strategy.stop_loss, stop_loss),
+                'take_profit': (strategy.take_profit, take_profit),
+                'units': (strategy.units, units),
+                'direction': (strategy.direction, signal),
+            }
+            
+            strategy.in_trade = True
+            strategy.entry_price = entry_price
+            strategy.stop_loss = stop_loss
+            strategy.take_profit = take_profit
+            strategy.units = units
+            strategy.direction = signal
 
-        # Track active trade
-        strategy.in_trade = True
-        strategy.entry_price = entry_price
-        strategy.stop_loss = stop_loss
-        strategy.take_profit = take_profit
-        strategy.units = units
-        strategy.entry_idx = idx
-        strategy.direction = signal
+            self.active_trades[strategy_name] = trade
+            
+            # Log state changes
+            log_strategy_state_change(strategy_name, old_state)
 
-        self.active_trades[strategy_name] = trade
+            # persist strategy status (enabled state only — in_trade tracked via Trade table)
+            db_status = (
+                self.db.query(StrategyStatus).filter_by(strategy_name=strategy_name).first()
+            )
+            if db_status:
+                self.db.commit()
+                log_database_operation("COMMIT", True, f"StrategyStatus verified for {strategy_name}")
 
-        # Log trade opening
-        monitor.log_trade_open(
-            strategy_name, signal, entry_price, stop_loss, take_profit, units
-        )
+
+            logger.info(
+                f"✅ [{strategy_name}] Live trade opened: {signal.upper()} @ ${entry_price:,.2f} | "
+                f"SL: ${stop_loss:,.2f} | TP: ${take_profit:,.2f} | Units: {units:.4f}"
+            )
+            
+        except Exception as e:
+            log_trade_result(
+                strategy_name=strategy_name,
+                success=False,
+                error=e,
+                message=f"Failed to open live trade: {str(e)}",
+                stack_trace=traceback.format_exc()
+            )
+            self.db.rollback()
+            logger.error(f"❌ [{strategy_name}] Failed to open live trade: {e}")
+            raise
+
+    def _open_trade(
+        self, strategy_name: str, signal: str, df: pd.DataFrame, idx: int, config: Dict
+    ):
+        """Open a new paper trade with detailed logging"""
+        strategy = self.strategies[strategy_name]
+        
+        try:
+            row = df.iloc[idx]
+
+            # Calculate stop distance
+            stop_dist = config.get("atr_sl_mult", 1.5) * row["atr"]
+            if stop_dist <= 0:
+                logger.warning(f"[{strategy_name}] Invalid stop distance: {stop_dist}")
+                log_trade_result(
+                    strategy_name=strategy_name,
+                    success=False,
+                    message=f"Invalid stop distance: ${stop_dist:.2f}"
+                )
+                return
+
+            # Risk amount
+            risk_pct = config.get("risk_pct", 0.01)
+            risk_amt = strategy.capital * risk_pct
+            units = risk_amt / stop_dist
+
+            # Entry price (with slippage for strategy3)
+            entry_price = row["open"]
+            slippage_cost = 0.0
+
+            if strategy_name == "strategy3":
+                slippage_cfg = config.get("slippage", 0.0003)
+                if signal == "long":
+                    entry_price *= 1 + slippage_cfg
+                else:
+                    entry_price *= 1 - slippage_cfg
+                slippage_cost = entry_price * units * slippage_cfg
+
+            # Calculate SL/TP
+            if signal == "long":
+                stop_loss = entry_price - stop_dist
+                take_profit = (
+                    entry_price
+                    + config.get("reward_ratio", config.get("atr_tp_mult", 3.0)) * stop_dist
+                )
+            else:  # short
+                stop_loss = entry_price + stop_dist
+                take_profit = (
+                    entry_price
+                    - config.get("reward_ratio", config.get("atr_tp_mult", 3.0)) * stop_dist
+                )
+
+            # Log trade attempt
+            log_trade_attempt(
+                strategy_name=strategy_name,
+                signal=signal,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                units=units,
+                capital=strategy.capital,
+                risk_pct=risk_pct,
+                symbol=self.symbol,
+                trade_type="historical",
+                extra_details={
+                    "Bar Index": idx,
+                    "ATR": row["atr"],
+                    "Stop Distance (ATR)": f"{config.get('atr_sl_mult', 1.5)}x",
+                    "Slippage Cost": f"${slippage_cost:.2f}" if strategy_name == "strategy3" else "$0",
+                }
+            )
+
+            # Create trade record
+            trade = Trade(
+                strategy_name=strategy_name,
+                symbol=self.symbol.upper(),
+                direction=signal,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                units=units,
+                entry_time=datetime.now(timezone.utc),
+                status="open",
+            )
+
+            self.db.add(trade)
+            self.db.commit()
+            self.db.refresh(trade)
+            
+            log_database_operation("COMMIT", True, f"Trade #{trade.id} created")
+            log_trade_result(
+                strategy_name=strategy_name,
+                success=True,
+                trade_id=trade.id,
+                message=f"Historical trade opened: {signal.upper()} @ ${entry_price:,.2f}"
+            )
+
+            # Track active trade
+            old_state = {
+                'in_trade': (strategy.in_trade, True),
+                'entry_price': (strategy.entry_price, entry_price),
+                'entry_idx': (strategy.entry_idx, idx),
+            }
+            
+            strategy.in_trade = True
+            strategy.entry_price = entry_price
+            strategy.stop_loss = stop_loss
+            strategy.take_profit = take_profit
+            strategy.units = units
+            strategy.entry_idx = idx
+            strategy.direction = signal
+
+            self.active_trades[strategy_name] = trade
+            
+            # Log state changes
+            log_strategy_state_change(strategy_name, old_state)
+
+            logger.info(
+                f"✅ [{strategy_name}] Trade opened: {signal.upper()} @ ${entry_price:,.2f} | "
+                f"SL: ${stop_loss:,.2f} | TP: ${take_profit:,.2f} | Size: {units:.4f}"
+            )
+            
+        except Exception as e:
+            log_trade_result(
+                strategy_name=strategy_name,
+                success=False,
+                error=e,
+                message=f"Failed to open trade: {str(e)}",
+                stack_trace=traceback.format_exc()
+            )
+            self.db.rollback()
+            logger.error(f"❌ [{strategy_name}] Failed to open trade: {e}")
+            raise
 
     def _manage_trade(self, strategy_name: str, df: pd.DataFrame, current_idx: int):
         """Manage an active trade - check for exits"""
@@ -434,7 +711,7 @@ class PaperTradeEngine:
             ):
                 exit_price = row["close"]
                 exit_reason = "timeout"
-        else:  # short
+        elif strategy.direction == "short":
             # Check stop loss
             if row["high"] >= strategy.stop_loss:
                 exit_price = strategy.stop_loss
@@ -443,21 +720,26 @@ class PaperTradeEngine:
             elif row["low"] <= strategy.take_profit:
                 exit_price = strategy.take_profit
                 exit_reason = "tp_hit"
+        # If direction is None, skip — no valid trade state
 
         if exit_price:
             # Apply exit slippage (strategy3)
+            slippage_val = 0.0
             if strategy_name == "strategy3":
-                slippage = config.get("slippage", 0.0003)
+                slippage_val = config.get("slippage", 0.0003)
                 if strategy.direction == "long":
-                    exit_price *= 1 - slippage
+                    exit_price *= 1 - slippage_val
                 else:
-                    exit_price *= 1 + slippage
+                    exit_price *= 1 + slippage_val
 
-            # Calculate PnL
+            # Calculate PnL (guard against None direction)
             if strategy.direction == "long":
                 pnl = (exit_price - strategy.entry_price) * strategy.units
-            else:
+            elif strategy.direction == "short":
                 pnl = (strategy.entry_price - exit_price) * strategy.units
+            else:
+                logger.warning(f"⚠️ [{strategy_name}] Unknown direction: {strategy.direction}")
+                pnl = 0.0
 
             # Deduct fees
             fee = abs(exit_price * strategy.units) * config.get("fee", 0.0004)
@@ -479,20 +761,15 @@ class PaperTradeEngine:
 
             # Update trade record
             trade.exit_price = exit_price
-            trade.exit_time = datetime.utcnow()
+            trade.exit_time = datetime.now(timezone.utc)
             trade.pnl = pnl
             trade.exit_reason = exit_reason
             trade.fee = fee
-            trade.slippage = slippage if strategy_name == "strategy3" else 0.0
+            trade.slippage = slippage_val
             trade.funding_cost = funding_cost
             trade.status = "closed"
 
             self.db.commit()
-
-            # Log trade closing
-            monitor.log_trade_close(
-                strategy_name, strategy.direction, exit_price, pnl, exit_reason
-            )
 
             # Remove from active trades
             del self.active_trades[strategy_name]
@@ -504,7 +781,7 @@ class PaperTradeEngine:
         snapshot = EquitySnapshot(
             strategy_name=strategy_name,
             equity=strategy.capital,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
         self.db.add(snapshot)
         self.db.commit()
@@ -750,17 +1027,21 @@ class PaperTradeEngine:
                     "stop_loss": trade.stop_loss,
                     "take_profit": trade.take_profit,
                     "units": trade.units,
-                    "entry_time": trade.entry_time.isoformat() if trade.entry_time else None,
+                    "entry_time": trade.entry_time.isoformat()
+                    if trade.entry_time
+                    else None,
                     "unrealized_pnl": round(unrealized_pnl, 2),
                     "unrealized_pnl_pct": round(
                         (unrealized_pnl / (trade.entry_price * trade.units)) * 100, 2
-                    ) if trade.entry_price > 0 and trade.units > 0 else 0,
+                    )
+                    if trade.entry_price > 0 and trade.units > 0
+                    else 0,
                 }
             )
         return trades
 
     def get_trade_history(
-        self, strategy_name: str = None, limit: int = 50
+        self, strategy_name: str = None, limit: int = 48
     ) -> List[Dict]:
         """Get trade history"""
         query = self.db.query(Trade).filter_by(status="closed")
@@ -802,7 +1083,7 @@ class PaperTradeEngine:
 
             if db_status:
                 db_status.enabled = enabled
-                db_status.last_updated = datetime.utcnow()
+                db_status.last_updated = datetime.now(timezone.utc)
             else:
                 self.db.add(
                     StrategyStatus(strategy_name=strategy_name, enabled=enabled)

@@ -49,24 +49,32 @@ class IndicatorEngine:
 
         cfg = config
 
-        # EMAs (use configurable periods for flexibility)
-        ema_short_period = cfg.get('ema_short', cfg.get('ema_fast', 20))
-        ema_long_period = cfg.get('ema_long', cfg.get('ema_fast', 50))
-        ema_slow_period = cfg.get('ema_slow', 200)
+        # ── Long-term trend filter (always 200-period, never overridden) ──────
+        df['ema200'] = IndicatorEngine.compute_ema(close, 200)
 
+        # ── Medium EMA: uses ema_slow from config (50 for S1, 60 for S2, etc.) ─
+        ema_slow_period = cfg.get('ema_slow', 50)
+        df['ema50'] = IndicatorEngine.compute_ema(close, ema_slow_period)
+        df['ema_slow'] = df['ema50']
+
+        # ── Fast EMA: uses ema_fast from config ──────────────────────────────
+        ema_fast_period = cfg.get('ema_fast', 20)
+        df['ema_fast'] = IndicatorEngine.compute_ema(close, ema_fast_period)
+
+        # ── Strategy4 aliases: ema20 (fast) / ema50 (slow = ema_long) ────────
+        # Strategy4 has explicit ema_short/ema_long keys; fall back to fast/slow
+        ema_short_period = cfg.get('ema_short', ema_fast_period)
+        ema_long_period  = cfg.get('ema_long', ema_slow_period)
         df['ema_short'] = IndicatorEngine.compute_ema(close, ema_short_period)
-        df['ema_long'] = IndicatorEngine.compute_ema(close, ema_long_period)
-        df['ema200'] = IndicatorEngine.compute_ema(close, ema_slow_period)
+        df['ema_long']  = IndicatorEngine.compute_ema(close, ema_long_period)
+        df['ema20'] = df['ema_short']   # S4 checks ema20/ema50
+        # Override ema50 for Strategy4 so crossover uses correct pair
+        if 'ema_long' in cfg:
+            df['ema50'] = df['ema_long']
 
-        # Additional EMA aliases for strategy support
-        df['ema_fast'] = IndicatorEngine.compute_ema(close, cfg.get('ema_fast', 20))
-        df['ema_slow'] = IndicatorEngine.compute_ema(close, cfg.get('ema_slow', 50))
-        df['ema8'] = IndicatorEngine.compute_ema(close, cfg.get('ema_fast', 8))
-        df['ema21'] = IndicatorEngine.compute_ema(close, cfg.get('ema_slow', 21))
-
-        # Legacy column names for backward compatibility
-        df['ema20'] = df['ema_short']
-        df['ema50'] = df['ema_long']
+        # ── Strategy5 aliases: ema8 / ema21 (mapped from fast/slow) ──────────
+        df['ema8']  = df['ema_fast']    # named ema8 but uses ema_fast period
+        df['ema21'] = df['ema_slow']    # named ema21 but uses ema_slow period
 
         # ATR
         df['atr'] = IndicatorEngine.compute_atr(high, low, close, cfg.get('atr_period', 14))
@@ -74,15 +82,16 @@ class IndicatorEngine:
         # RSI
         df['rsi'] = IndicatorEngine.compute_rsi(close, cfg.get('rsi_period', 14))
 
-        # Donchian channels
-        df['hh20'] = IndicatorEngine.compute_hh(high, cfg.get('breakout_period', 20))
-        df['ll20'] = IndicatorEngine.compute_ll(low, cfg.get('breakout_period', 20))
+        # Donchian channels (highest-high / lowest-low of last N bars, shifted 1)
+        breakout_period = cfg.get('breakout_period', 20)
+        df['hh20'] = IndicatorEngine.compute_hh(high, breakout_period)
+        df['ll20'] = IndicatorEngine.compute_ll(low, breakout_period)
 
-        # Volume MA
-        df['vol_ma20'] = IndicatorEngine.compute_volume_ma(volume, cfg.get('breakout_period', 20))
+        # Volume MA (same window as breakout)
+        df['vol_ma20'] = IndicatorEngine.compute_volume_ma(volume, breakout_period)
 
-        # VWAP for momentum breakout and filter strategies
-        vwap_period = cfg.get('vwap_period', cfg.get('breakout_period', 20))
+        # VWAP (rolling, using vwap_period or breakout_period)
+        vwap_period = cfg.get('vwap_period', breakout_period)
         df['vwap'] = (close * volume).rolling(vwap_period).sum() / volume.rolling(vwap_period).sum()
 
         # Momentum
@@ -90,3 +99,4 @@ class IndicatorEngine:
         df['momentum'] = close - close.shift(momentum_period)
 
         return df
+
