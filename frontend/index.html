@@ -182,6 +182,7 @@
             <button class="tab" onclick="showTab('trades')">Trade History</button>
             <button class="tab" onclick="showTab('active')">Active Trades</button>
             <button class="tab" onclick="showTab('analytics')">Analytics</button>
+            <button class="tab" onclick="showTab('logs')">Logs</button>
         </div>
         
         <!-- Dashboard -->
@@ -227,6 +228,14 @@
                 <tbody id="strat-stats-body"></tbody>
             </table>
         </div>
+
+        <!-- Logs -->
+        <div id="logs" class="content">
+            <h3 style="margin-bottom:12px;color:#64748b;">Server Logs</h3>
+            <div id="logs-content" style="background:#1a2235;border:1px solid #2a3548;border-radius:8px;padding:16px;min-height:200px;">
+                <p>Loading logs...</p>
+            </div>
+        </div>
     </div>
 
     <script>
@@ -255,6 +264,7 @@
         if (tab === 'analytics') {
             loadAnalytics();
         }
+        if (tab === 'logs') loadLogs();
     }
     
     function updatePrice(price) {
@@ -509,7 +519,18 @@
             }
         } catch(e) { console.error(e); }
     }
-    
+
+    async function loadLogs() {
+        try {
+            document.getElementById('logs-content').innerHTML = '<p>Fetching logs...</p>';
+            // Placeholder for logs - backend doesn't have logs endpoint yet
+            document.getElementById('logs-content').innerHTML = '<p>Logs functionality is not implemented. Server logs are available in the terminal where the backend is running.</p>';
+        } catch(e) {
+            document.getElementById('logs-content').innerHTML = '<p>Error loading logs.</p>';
+            console.error(e);
+        }
+    }
+
     function connectWS() {
         const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
         const host = location.host || '127.0.0.1:8000';
