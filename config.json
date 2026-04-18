@@ -10,7 +10,7 @@
     "strategy1": {
       "enabled": true,
       "name": "Long-Only Breakout",
-      "initial_capital": 10000,
+      "initial_capital": 100,
       "risk_pct": 0.005,
       "ema_fast": 20,
       "ema_slow": 50,
@@ -26,7 +26,7 @@
     "strategy2": {
       "enabled": true,
       "name": "Long-Only Relaxed",
-      "initial_capital": 10000,
+      "initial_capital": 100,
       "risk_pct": 0.008,
       "ema_fast": 25,
       "ema_slow": 60,
@@ -42,7 +42,7 @@
     "strategy3": {
       "enabled": true,
       "name": "Long/Short Futures",
-      "initial_capital": 10000,
+      "initial_capital": 100,
       "risk_pct": 0.006,
       "reward_ratio": 2,
       "ema_fast": 15,
@@ -59,7 +59,7 @@
     "strategy4": {
       "enabled": true,
       "name": "EMA Crossover RSI & Price Action",
-      "initial_capital": 10000,
+      "initial_capital": 100,
       "risk_pct": 0.015,
       "ema_fast": 8,
       "ema_slow": 21,
@@ -72,7 +72,7 @@
     "strategy5": {
       "enabled": true,
       "name": "EMA 8/21 VWAP Momentum",
-      "initial_capital": 10000,
+      "initial_capital": 100,
       "risk_pct": 0.012,
       "ema_fast": 5,
       "ema_slow": 13,
