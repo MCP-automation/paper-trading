@@ -13,7 +13,6 @@ from engine.strategies import (
     Strategy3,
     Strategy4,
     Strategy5,
-    Strategy6,
 )
 from engine.indicators import IndicatorEngine
 from engine.signal_logger import log_signal, log_signal_check
@@ -104,7 +103,6 @@ class PaperTradeEngine:
         self.strategies["strategy3"] = Strategy3(strat_cfg["strategy3"])
         self.strategies["strategy4"] = Strategy4(strat_cfg["strategy4"])
         self.strategies["strategy5"] = Strategy5(strat_cfg["strategy5"])
-        self.strategies["strategy6"] = Strategy6(strat_cfg["strategy6"])
 
         # Load enabled status from DB
         for name in self.strategies:

@@ -81,16 +81,6 @@
       "momentum_period": 3,
       "reward_ratio": 1.8,
       "fee": 0.0004
-    },
-    "strategy6": {
-      "enabled": true,
-      "name": "Momentum + Mean Reversion Scalp",
-      "initial_capital": 10000,
-      "risk_pct": 0.01,
-      "atr_sl_mult": 1.0,
-      "atr_tp_mult": 1.5,
-      "fee": 0.0004,
-      "slippage": 0.0003
     }
   },
   "system": {
