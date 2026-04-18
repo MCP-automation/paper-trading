@@ -406,17 +406,17 @@ async def summary():
     # Add extended stats
     try:
         if db_session:
-            total_trades = db_session.query(Trade).filter_by(status="closed").count()
+            total_trades = db_session.query(Trade).filter(Trade.status == "closed", Trade.strategy_name != "strategy6").count()
             wins = (
                 db_session.query(Trade)
-                .filter(Trade.status == "closed", Trade.pnl > 0)
+                .filter(Trade.status == "closed", Trade.pnl > 0, Trade.strategy_name != "strategy6")
                 .count()
             )
             win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
 
             # Calculate total P&L
             total_pnl = 0
-            for t in db_session.query(Trade).filter_by(status="closed").all():
+            for t in db_session.query(Trade).filter(Trade.status == "closed", Trade.strategy_name != "strategy6").all():
                 total_pnl += t.pnl or 0
 
             # Find best strategy

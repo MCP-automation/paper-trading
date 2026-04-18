@@ -292,7 +292,7 @@
             el.className = 'strat-card s' + ((i % 5) + 1);
             el.innerHTML = `
                 <div class="strat-name">${name}</div>
-                <div class="strat-cap">${fmt(d.current_equity || 10000)}</div>
+                <div class="strat-cap">${fmt(d.current_equity || 100)}</div>
                 <div class="strat-return ${ret >= 0 ? 'pos' : 'neg'}">${pct(ret)}</div>
                 <div style="font-size:11px;color:#64748b;margin-top:6px;">
                     Trades: ${d.trade_count || 0} | Win: ${d.win_rate || 0}%

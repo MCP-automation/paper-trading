@@ -1042,7 +1042,7 @@ class PaperTradeEngine:
         self, strategy_name: str = None, limit: int = 48
     ) -> List[Dict]:
         """Get trade history"""
-        query = self.db.query(Trade).filter_by(status="closed")
+        query = self.db.query(Trade).filter(Trade.status == "closed", Trade.strategy_name != "strategy6")
         if strategy_name:
             query = query.filter_by(strategy_name=strategy_name)
 
