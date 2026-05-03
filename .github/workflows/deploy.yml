@@ -27,7 +27,7 @@ jobs:
 
             python backend/run_with_logging.py &
             SERVER_PID=$!
-            sleep 20
+            sleep 40
 
             python test_api.py
             TEST_RESULT=$?
