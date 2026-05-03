@@ -87,6 +87,7 @@
     "db_path": "paper_trading.db",
     "check_interval_seconds": 30,
     "host": "127.0.0.1",
-    "port": 8000
+    "port": 8000,
+    "max_active_trades_per_strategy": 3
   }
 }

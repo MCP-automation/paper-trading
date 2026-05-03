@@ -554,7 +554,14 @@ class PaperTradeEngine:
     ):
         """Open a new paper trade with detailed logging"""
         strategy = self.strategies[strategy_name]
-        
+
+        # Check max active trades per strategy
+        max_active = self.config.get("system", {}).get("max_active_trades_per_strategy", 5)
+        current_active = len([t for t in self.active_trades.values() if t.strategy_name == strategy_name])
+        if current_active >= max_active:
+            logger.info(f"[{strategy_name}] Max active trades ({max_active}) reached ({current_active}), skipping new trade")
+            return
+
         try:
             row = df.iloc[idx]
 

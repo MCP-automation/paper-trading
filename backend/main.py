@@ -442,6 +442,46 @@ async def summary():
     return data
 
 
+@app.get("/api/active-trades")
+async def active_trades():
+    """Get currently active/open trades across all strategies."""
+    try:
+        if not db_session:
+            return []
+
+        open_trades = db_session.query(Trade).filter_by(status="open").all()
+
+        result = []
+        current_price = (
+            binance_client.latest_ticker.get("price")
+            if binance_client and binance_client.latest_ticker
+            else None
+        )
+
+        for t in open_trades:
+            live_pnl = 0
+            if current_price and t.entry_price and t.units:
+                if t.direction == "long":
+                    live_pnl = (current_price - t.entry_price) * t.units
+                elif t.direction == "short":
+                    live_pnl = (t.entry_price - current_price) * t.units
+
+            result.append({
+                "id": t.id,
+                "strategy": t.strategy_name,
+                "direction": t.direction,
+                "entry_price": t.entry_price,
+                "stop_loss": t.stop_loss,
+                "take_profit": t.take_profit,
+                "current_pnl": round(live_pnl, 2),
+            })
+
+        return result
+    except Exception as e:
+        logger.error(f"Active trades error: {e}")
+        return []
+
+
 @app.get("/api/debug")
 async def debug_strategies():
     """Live debug: show indicator values and signal conditions for all strategies."""
