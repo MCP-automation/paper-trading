@@ -477,9 +477,20 @@ async def active_trades():
             })
 
         return result
+
+
+@app.post("/api/close-all-trades")
+async def close_all_trades():
+    """Close all active trades at current market price"""
+    try:
+        if not paper_engine:
+            return {"error": "Trading engine not initialized"}
+
+        result = paper_engine.close_all_trades()
+        return result
     except Exception as e:
-        logger.error(f"Active trades error: {e}")
-        return []
+        logger.error(f"Close all trades error: {e}")
+        return {"error": str(e)}
 
 
 @app.get("/api/debug")

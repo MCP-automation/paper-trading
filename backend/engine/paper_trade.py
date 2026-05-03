@@ -1133,3 +1133,40 @@ class PaperTradeEngine:
                 ]
 
             return result
+
+    def close_all_trades(self) -> Dict[str, Any]:
+        """Close all active trades at market price"""
+        closed_count = 0
+        total_pnl = 0.0
+        closed_trades = []
+
+        current_price = self.last_live_price
+        if current_price <= 0:
+            return {"error": "No valid current price available"}
+
+        # Copy active_trades to avoid modification during iteration
+        active_copy = self.active_trades.copy()
+
+        for strategy_name, trade in active_copy.items():
+            try:
+                # Close the trade
+                self._close_trade(strategy_name, current_price, "manual_close_all")
+                closed_count += 1
+                total_pnl += trade.pnl or 0
+                closed_trades.append({
+                    "strategy": strategy_name,
+                    "direction": trade.direction,
+                    "entry_price": trade.entry_price,
+                    "exit_price": current_price,
+                    "pnl": trade.pnl
+                })
+            except Exception as e:
+                logger.error(f"Failed to close trade for {strategy_name}: {e}")
+
+        return {
+            "success": True,
+            "closed_count": closed_count,
+            "total_pnl": round(total_pnl, 2),
+            "current_price": current_price,
+            "closed_trades": closed_trades
+        }
