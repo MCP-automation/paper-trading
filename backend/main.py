@@ -477,6 +477,9 @@ async def active_trades():
             })
 
         return result
+    except Exception as e:
+        logger.error(f"Active trades error: {e}")
+        return []
 
 
 @app.post("/api/close-all-trades")
