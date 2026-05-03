@@ -13,16 +13,29 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Deploy to VPS via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
+       - name: Deploy to VPS via SSH
+         uses: appleboy/ssh-action@v1.0.3
+         with:
+           host: ${{ secrets.VPS_HOST }}
+           username: ${{ secrets.VPS_USER }}
+           key: ${{ secrets.VPS_SSH_KEY }}
            script: |
              cd /opt/paper-trading
              git pull origin main
              source venv/bin/activate
              pip install -r backend/requirements.txt --quiet
-             (python backend/run_with_logging.py &) && SERVER_PID=$! && sleep 20 && python test_api.py && TEST_RESULT=$? && kill $SERVER_PID && if [ $TEST_RESULT -eq 0 ]; then echo "Tests passed, restarting service" && systemctl restart paper-trading && systemctl status paper-trading --no-pager; else echo "Tests failed, aborting deploy" && exit 1; fi
+             python backend/run_with_logging.py &
+             SERVER_PID=$!
+             sleep 20
+             python test_api.py
+             TEST_RESULT=$?
+             kill $SERVER_PID
+             if [ $TEST_RESULT -eq 0 ]; then
+               echo "Tests passed, restarting service"
+               systemctl restart paper-trading
+               systemctl status paper-trading --no-pager
+             else
+               echo "Tests failed, aborting deploy"
+               exit 1
+             fi
              deactivate
